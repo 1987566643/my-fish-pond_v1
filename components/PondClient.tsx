@@ -35,7 +35,7 @@ export default function PondClient(){
     const c = await fetch('/api/my-catches', { cache:'no-store' }).then(r=>r.json()).catch(()=>({fish:[]}));
     setMyCatchCount((c.fish||[]).length);
   }
-  useEffect(()=>{ refreshAll(); },[]);
+  useEffect(()=>{ refreshAll(); initDrawCanvas(); },[]);
 
   type PondSprite = { id:string; img:HTMLImageElement; name:string; owner_name:string; created_at:string; likes:number; dislikes:number; w:number; h:number; x:number; y:number; angle:number; speed:number; turn:number; caught:boolean; };
   const spritesRef = useRef<PondSprite[]>([]);
@@ -191,16 +191,10 @@ export default function PondClient(){
     };
   },[brush,currentColor]);
 
-  function clearDrawing(){
-    const cvs = drawCanvasRef.current!; (cvs as any)._strokes = []; (cvs as any).redraw();
+  function clearDrawing(){ const c = drawCanvasRef.current! as any; c._strokes = []; c.redraw && c.redraw(); }
+  function undoDrawing(){ const c = drawCanvasRef.current! as any; const arr = c._strokes as any[] || []; if(arr.length){ arr.pop(); c.redraw && c.redraw(); } }
   }
-  function undoDrawing(){
-    const cvs = drawCanvasRef.current!; const strokes = (cvs as any)._strokes as any[]; if(strokes.length){ strokes.pop(); (cvs as any).redraw(); }
-  }
-  async function saveFish(){
-    const cvs = drawCanvasRef.current!;
-    const strokes = (cvs as any)._strokes as any[];
-    if(!strokes.length){ alert('先画一条鱼 🙂'); return; }
+  async function saveFish(){ const c = drawCanvasRef.current! as any; const strokes = (c._strokes as any[])||[]; if(!strokes.length){ alert('先画一条鱼 🙂'); return; } const off = document.createElement('canvas'); off.width=420; off.height=240; const g = off.getContext('2d')!; for(const s of strokes){ g.strokeStyle=s.color; g.lineWidth=s.size; g.lineCap='round'; g.lineJoin='round'; g.beginPath(); for(let i=0;i<s.points.length;i++){ const p=s.points[i]; if(i===0) g.moveTo(p.x,p.y); else g.lineTo(p.x,p.y);} g.stroke(); } const data_url = off.toDataURL('image/png'); const name = fishName.trim() || `无名鱼-${String(Date.now()).slice(-5)}`; const res = await fetch('/api/fish',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ name, data_url, w:420, h:240 })}); if(res.ok){ (drawDlgRef.current as HTMLDialogElement).close(); setFishName(''); clearDrawing(); refreshAll(); } else { alert('保存失败'); } }
     const off = document.createElement('canvas'); off.width=420; off.height=240; const g = off.getContext('2d')!;
     for(const s of strokes){
       g.strokeStyle=s.color; g.lineWidth=s.size; g.lineCap='round'; g.lineJoin='round'; g.beginPath();
@@ -223,7 +217,7 @@ export default function PondClient(){
   return (
     <div>
       <header style={{display:'flex',gap:8,alignItems:'center',padding:8,borderBottom:'1px solid rgba(255,255,255,.08)'}}>
-        <button className="ghost" onClick={()=>{ const c=drawCanvasRef.current; if(c){ (c as any)._strokes=[]; (c as any).redraw && (c as any).redraw(); } drawDlgRef.current?.showModal(); }}>🎨 画鱼</button>
+        <button className="ghost" onClick={()=>{ initDrawCanvas(); drawDlgRef.current?.showModal(); }}>🎨 画鱼</button>
         <button className="ghost" onClick={armToggle}>{armed ? '✅ 点击池塘放下鱼钩' : '🎯 放下鱼钩'}</button>
         <button className="ghost" onClick={reelUp}>⏫ 收回鱼钩</button>
         <span style={{marginLeft:'auto'}} className="muted">池塘 {pondCount} | 我的收获 {myCatchCount}</span>
@@ -282,6 +276,90 @@ export default function PondClient(){
   );
 }
 
+
+
+// 重新初始化画板：保证每次打开都可用（事件、清空、重绘）
+function initDrawCanvas(){
+  const cvs = drawCanvasRef.current!;
+  const ctx = cvs.getContext('2d')!;
+  const state:any = cvs as any;
+
+  // 若之前绑定过，先解绑旧事件
+  if (state._cleanup) { try { state._cleanup(); } catch {} }
+
+  // 固定尺寸，避免对话框隐藏时 getBoundingClientRect 影响绘制比例
+  const cssW = Math.floor(cvs.clientWidth || 700);
+  const cssH = Math.floor(cvs.clientHeight || 380);
+  const dpr = Math.max(1, window.devicePixelRatio||1);
+  cvs.style.width = cssW + 'px';
+  cvs.style.height = cssH + 'px';
+  cvs.width = Math.floor(cssW * dpr);
+  cvs.height = Math.floor(cssH * dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+
+  // 画参考线与笔画
+  state._strokes = [];
+  function drawGuides(){
+    ctx.clearRect(0,0,cssW,cssH);
+    ctx.globalAlpha=.12; ctx.fillStyle='#11324b'; ctx.fillRect(0,0,cssW,cssH);
+    ctx.globalAlpha=1;
+    // 画箭头提示（头朝右）
+    ctx.save();
+    ctx.translate(cssW-36, 24);
+    ctx.beginPath(); ctx.moveTo(-20,0); ctx.lineTo(0,-8); ctx.lineTo(0,8); ctx.closePath();
+    ctx.strokeStyle='#4aa3ff'; ctx.lineWidth=2; ctx.stroke();
+    ctx.restore();
+    // 重绘笔画
+    const strokes = state._strokes as any[];
+    for(const s of strokes){
+      ctx.strokeStyle=s.color; ctx.lineWidth=s.size; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.beginPath();
+      for(let i=0;i<s.points.length;i++){ const p=s.points[i]; if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); }
+      ctx.stroke();
+    }
+  }
+  state.redraw = drawGuides;
+  drawGuides();
+
+  let drawing=false; let last:{x:number,y:number}|null=null;
+  function pos(ev:PointerEvent){
+    const r = cvs.getBoundingClientRect();
+    const sx = cvs.width / Math.max(1, r.width);
+    const sy = cvs.height / Math.max(1, r.height);
+    // 由于 setTransform，坐标要除以 dpr
+    return { x:(ev.clientX - r.left) * (sx/dpr), y:(ev.clientY - r.top) * (sy/dpr) };
+  }
+  function strokePath(points:{x:number,y:number}[], col:string, size:number){
+    ctx.strokeStyle=col; ctx.lineWidth=size; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.beginPath();
+    for(let i=0;i<points.length;i++){ const p=points[i]; if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); }
+    ctx.stroke();
+  }
+  function down(ev:PointerEvent){
+    drawing=true; last=pos(ev);
+    const s = { color: currentColor, size: brush, points:[last] as any[] };
+    state._strokes.push(s);
+    strokePath([last], s.color, s.size);
+  }
+  function move(ev:PointerEvent){
+    if(!drawing || !last) return;
+    const p = pos(ev);
+    const strokes = state._strokes as any[];
+    const s = strokes[strokes.length-1];
+    s.points.push(p);
+    strokePath([last, p], s.color, s.size);
+    last = p;
+  }
+  function up(){ drawing=false; last=null; }
+
+  cvs.addEventListener('pointerdown', down);
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+
+  state._cleanup = ()=>{
+    cvs.removeEventListener('pointerdown', down);
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+  };
+}
 function rnd(min:number,max:number){ return Math.random()*(max-min)+min; }
 
 function setupHiDPI(canvas:HTMLCanvasElement, w?:number, h?:number){
