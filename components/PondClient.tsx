@@ -1,9 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { drawHookIcon, HOOK_SIZE } from './HookIcon';
 
-/** 后端返回的鱼结构（已在 /api/fish GET 中联表 users 并统计 reactions） */
+/** ================== 可调参数 ================== */
+const INIT_SCALE = 0.3;        // 初始体型：画布导出后，作为鱼的起始尺寸（越小越迷你）
+const GROWTH_PER_DAY = 0.03;   // 每天增长比例（3%/day）
+const MAX_SCALE = 1.8;         // 成长上限倍数
+const EXPORT_W = 420;          // 画布导出基准宽
+const EXPORT_H = 240;          // 画布导出基准高
+/** ============================================== */
+
+/** 后端返回的鱼结构（/api/fish GET 已联表 users 并统计 reactions） */
 type ServerFish = {
   id: string;
   name: string;
@@ -41,10 +49,10 @@ function rnd(min: number, max: number) {
   return Math.random() * (max - min) + min;
 }
 
-/** 随时间长大：初始0.7，每小时+0.03，上限1.8 */
-function sizeFactor(iso: string, s0 = 0.7, kPerHour = 0.03, sMax = 1.8) {
-  const hours = (Date.now() - new Date(iso).getTime()) / 3_600_000;
-  return Math.min(s0 + kPerHour * hours, sMax);
+/** 随时间长大：初始 1.0（因为 w/h 已经按 INIT_SCALE 存库），按天增长 */
+function sizeFactor(iso: string, s0 = 1.0, kPerDay = GROWTH_PER_DAY, sMax = MAX_SCALE) {
+  const days = (Date.now() - new Date(iso).getTime()) / 86_400_000;
+  return Math.min(s0 + kPerDay * days, sMax);
 }
 
 const palette = [
@@ -94,14 +102,20 @@ export default function PondClient() {
     caughtId: null as null | string,
   });
 
-  /** 从后端刷新当前池塘鱼和我的收获数 */
+  /** 从后端刷新当前池塘鱼和“我的收获数” */
   async function refreshAll() {
+    // 池塘
     const res = await fetch('/api/fish', { cache: 'no-store' });
     const json = await res.json();
     setPondFish(json.fish || []);
-    // 你的后端是 /api/mine 返回我的收获
-    const c = await fetch('/api/mine', { cache: 'no-store' }).then((r) => r.json()).catch(() => ({ fish: [] }));
-    setMyCatchCount((c.fish || []).length);
+
+    // ✅ 用 /api/catch（GET）统计“我钓到的鱼”，而不是 /api/mine
+    try {
+      const mineCatch = await fetch('/api/catch', { cache: 'no-store' }).then((r) => r.json());
+      setMyCatchCount((mineCatch.fish || []).length);
+    } catch {
+      setMyCatchCount(0);
+    }
   }
 
   useEffect(() => {
@@ -114,13 +128,14 @@ export default function PondClient() {
     const cvs = drawCanvasRef.current!;
     if (!cvs) return;
 
-    setupHiDPI(cvs, undefined, 240);
+    // ✅ 初始化时显式设置宽高，避免对话框未开启导致 rect.width=0
+    setupHiDPI(cvs, EXPORT_W, EXPORT_H);
     const ctx = cvs.getContext('2d')!;
     (cvs as any)._strokes = (cvs as any)._strokes || [];
 
     function drawGuides() {
-      // 背景
       ctx.clearRect(0, 0, cvs.width, cvs.height);
+      // 背景
       ctx.save();
       ctx.globalAlpha = 0.08;
       for (let i = 0; i < 6; i++) {
@@ -176,14 +191,15 @@ export default function PondClient() {
       const p = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
       stroke.points.push(p);
       // 局部画线更顺滑
-      ctx.strokeStyle = stroke.color;
-      ctx.lineWidth = stroke.size;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(last.x, last.y);
-      ctx.lineTo(p.x, p.y);
-      ctx.stroke();
+      const ctx2 = cvs.getContext('2d')!;
+      ctx2.strokeStyle = stroke.color;
+      ctx2.lineWidth = stroke.size;
+      ctx2.lineCap = 'round';
+      ctx2.lineJoin = 'round';
+      ctx2.beginPath();
+      ctx2.moveTo(last.x, last.y);
+      ctx2.lineTo(p.x, p.y);
+      ctx2.stroke();
       last = p;
     }
     function up() {
@@ -227,10 +243,10 @@ export default function PondClient() {
       showToast('先画一条鱼 🙂');
       return;
     }
-    // 合成 PNG
+    // 1) 基准尺寸上合成 PNG
     const off = document.createElement('canvas');
-    off.width = 420;
-    off.height = 240;
+    off.width = EXPORT_W;
+    off.height = EXPORT_H;
     const g = off.getContext('2d')!;
     for (const s of strokes) {
       g.strokeStyle = s.color;
@@ -245,13 +261,26 @@ export default function PondClient() {
       }
       g.stroke();
     }
-    const data_url = off.toDataURL('image/png');
+
+    // 2) 生成“初始体型”版本（按 INIT_SCALE 缩小一次）
+    const dst = document.createElement('canvas');
+    const dstW = Math.max(1, Math.round(EXPORT_W * INIT_SCALE));
+    const dstH = Math.max(1, Math.round(EXPORT_H * INIT_SCALE));
+    dst.width = dstW;
+    dst.height = dstH;
+    const dg = dst.getContext('2d')!;
+    dg.imageSmoothingEnabled = true;
+    dg.imageSmoothingQuality = 'high';
+    dg.drawImage(off, 0, 0, dstW, dstH);
+
+    const data_url = dst.toDataURL('image/png');
     const name = (fishName || '').trim() || `无名鱼-${String(Date.now()).slice(-5)}`;
 
     const res = await fetch('/api/fish', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, data_url, w: 420, h: 240 }),
+      // 把缩小后的尺寸写入数据库，作为“起始体型”
+      body: JSON.stringify({ name, data_url, w: dstW, h: dstH }),
     });
 
     if (res.ok) {
@@ -276,7 +305,7 @@ export default function PondClient() {
     spritesRef.current = list.map((f) => {
       const img = new Image();
       img.src = f.data_url;
-      const scale = rnd(0.55, 1.1);
+      const scale = 1.0; // 初始体型已存库，这里不再随机
       return {
         id: f.id,
         name: f.name,
@@ -308,7 +337,7 @@ export default function PondClient() {
     const cvs = pondRef.current!;
     if (!cvs) return;
 
-    setupHiDPI(cvs);
+    setupHiDPI(cvs); // 池塘画布跟随容器大小
     const ctx = cvs.getContext('2d')!;
     let rafId = 0 as number;
 
@@ -389,15 +418,14 @@ export default function PondClient() {
           // 撞边后朝中心拐
           const margin = 30;
           if (s.x < margin || s.x > W - margin || s.y < 40 + margin || s.y > H - 40 - margin) {
-            const cx = W / 2,
-              cy = H / 2;
+            const cx = W / 2, cy = H / 2;
             s.angle = Math.atan2(cy - s.y, cx - s.x) + rnd(-0.25, 0.25);
           }
         }
         ctx.save();
         ctx.translate(s.x, s.y);
         ctx.rotate(s.angle);
-        const k = sizeFactor(s.created_at);
+        const k = sizeFactor(s.created_at); // 成长倍数（天）
         ctx.drawImage(s.img, (-s.w * k) / 2, (-s.h * k) / 2, s.w * k, s.h * k);
         ctx.restore();
       }
@@ -521,6 +549,8 @@ export default function PondClient() {
               c._strokes = [];
               c.redraw && c.redraw();
             }
+            // 打开前再确保有固定宽高，避免 0 宽
+            setupHiDPI(drawCanvasRef.current!, EXPORT_W, EXPORT_H);
             drawDlgRef.current?.showModal();
           }}
         >
@@ -580,18 +610,10 @@ export default function PondClient() {
         >
           <strong>🎨 画一条鱼（鱼头朝右）</strong>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="ghost" onClick={clearDrawing}>
-              清空
-            </button>
-            <button className="ghost" onClick={undoDrawing}>
-              撤销
-            </button>
-            <button className="ghost" onClick={saveFish}>
-              保存到池塘
-            </button>
-            <button className="ghost" onClick={() => drawDlgRef.current?.close()}>
-              关闭
-            </button>
+            <button className="ghost" onClick={clearDrawing}>清空</button>
+            <button className="ghost" onClick={undoDrawing}>撤销</button>
+            <button className="ghost" onClick={saveFish}>保存到池塘</button>
+            <button className="ghost" onClick={() => drawDlgRef.current?.close()}>关闭</button>
           </div>
         </div>
 
@@ -599,11 +621,12 @@ export default function PondClient() {
           <canvas
             ref={drawCanvasRef}
             style={{
-              width: '100%',
-              height: 240,
+              width: EXPORT_W,        // ✅ 指定固定宽高，防止 0 尺寸
+              height: EXPORT_H,
               background: '#0b1a23',
               border: '1px solid rgba(255,255,255,.12)',
               borderRadius: 8,
+              display: 'block',
             }}
           />
           <div style={{ display: 'grid', gap: 10 }}>
@@ -613,9 +636,7 @@ export default function PondClient() {
               <input type="range" min={2} max={30} step={1} value={brush} onChange={(e) => setBrush(Number(e.target.value))} />
             </label>
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>
-                颜色
-              </div>
+              <div className="muted" style={{ marginBottom: 6 }}>颜色</div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,28px)', gap: 6 }}>
                 {palette.map((c) => (
                   <button
@@ -623,9 +644,7 @@ export default function PondClient() {
                     onClick={() => setCurrentColor(c)}
                     title={c}
                     style={{
-                      width: 28,
-                      height: 28,
-                      borderRadius: 8,
+                      width: 28, height: 28, borderRadius: 8,
                       border: `2px solid ${currentColor === c ? '#fff' : 'rgba(255,255,255,.25)'}`,
                       background: c,
                     }}
@@ -637,15 +656,15 @@ export default function PondClient() {
           </div>
         </div>
 
-        {/* 悬浮信息卡 + 点赞/点踩 */}
+        {/* 悬浮信息卡 + 点赞/点踩（放在对话框外也行，这里沿用现有逻辑） */}
         {hovered &&
           (() => {
             const s = spritesRef.current.find((x) => x.id === hovered.id);
             if (!s) return null;
             const ageMs = Date.now() - new Date(s.created_at).getTime();
             const d = Math.floor(ageMs / 86400000),
-              h = Math.floor(ageMs / 3600000) % 24,
-              m = Math.floor(ageMs / 60000) % 60;
+                  h = Math.floor(ageMs / 3600000) % 24,
+                  m = Math.floor(ageMs / 60000) % 60;
             return (
               <div
                 style={{
@@ -662,16 +681,10 @@ export default function PondClient() {
               >
                 <div>作者：{s.owner_name}</div>
                 <div>名字：{s.name}</div>
-                <div>
-                  已存活：{d}天{h}小时{m}分
-                </div>
+                <div>已存活：{d}天{h}小时{m}分</div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                  <button className="ghost" onClick={async () => reactToFish(s.id, 1)}>
-                    👍 {s.likes}
-                  </button>
-                  <button className="ghost" onClick={async () => reactToFish(s.id, -1)}>
-                    👎 {s.dislikes}
-                  </button>
+                  <button className="ghost" onClick={async () => reactToFish(s.id, 1)}>👍 {s.likes}</button>
+                  <button className="ghost" onClick={async () => reactToFish(s.id, -1)}>👎 {s.dislikes}</button>
                 </div>
               </div>
             );
@@ -708,8 +721,8 @@ function setupHiDPI(canvas: HTMLCanvasElement, w?: number, h?: number) {
   function resize() {
     const dpr = Math.max(1, window.devicePixelRatio || 1);
     const rect = canvas.getBoundingClientRect();
-    const cssW = w || Math.floor(rect.width);
-    const cssH = h || Math.floor(rect.height || 400);
+    const cssW = (w ?? Math.floor(rect.width) || EXPORT_W);  // 没有宽就用备选
+    const cssH = (h ?? Math.floor(rect.height) || EXPORT_H);
     canvas.style.width = cssW + 'px';
     canvas.style.height = cssH + 'px';
     canvas.width = Math.floor(cssW * dpr);
