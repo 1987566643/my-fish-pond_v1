@@ -318,36 +318,69 @@ export default function PondClient() {
   const spritesRef = useRef<PondSprite[]>([]);
   const lastTs = useRef(performance.now());
 
+  /** 按 id 增量合并：老鱼保持位置/朝向，新鱼才随机入场 */
   function rebuildSprites(list: ServerFish[]) {
     const cvs = pondRef.current!;
-    const W = cvs.clientWidth || 800;
-    const H = cvs.clientHeight || 480;
-    const arr: PondSprite[] = [];
+    const W = (cvs && cvs.clientWidth) ? cvs.clientWidth : 800;
+    const H = (cvs && cvs.clientHeight) ? cvs.clientHeight : 480;
+
+    const prev = spritesRef.current || [];
+    const map = new Map<string, PondSprite>();
+    for (let i = 0; i < prev.length; i++) {
+      map.set(prev[i].id, prev[i]);
+    }
+
+    const next: PondSprite[] = [];
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
-      const img = new Image();
-      img.src = f.data_url;
-      arr.push({
-        id: f.id,
-        name: f.name,
-        owner_name: f.owner_name,
-        data_url: f.data_url,
-        w: f.w, // 初始体型已存库，这里不再随机
-        h: f.h,
-        created_at: f.created_at,
-        likes: f.likes || 0,
-        dislikes: f.dislikes || 0,
-        img,
-        x: rnd(80, Math.max(120, W - 80)),
-        y: rnd(80, Math.max(120, H - 80)),
-        angle: rnd(-Math.PI, Math.PI),
-        speed: rnd(22, 60),
-        turn: rnd(0.8, 2.2),
-        caught: false,
-      });
+      const existed = map.get(f.id);
+      if (existed) {
+        // 保留位置/朝向/速度等动态状态，只更新信息和资源
+        existed.name = f.name;
+        existed.owner_name = f.owner_name;
+        existed.likes = f.likes || 0;
+        existed.dislikes = f.dislikes || 0;
+        existed.created_at = f.created_at;
+
+        // 若图片或尺寸有变化，更新
+        if (existed.data_url !== f.data_url) {
+          existed.data_url = f.data_url;
+          existed.img = new Image();
+          existed.img.src = f.data_url;
+        }
+        existed.w = f.w;
+        existed.h = f.h;
+
+        // 不动 existed.x / y / angle / speed / turn / caught
+        next.push(existed);
+      } else {
+        // 新鱼：随机入场，但只对新鱼随机
+        const img = new Image();
+        img.src = f.data_url;
+        next.push({
+          id: f.id,
+          name: f.name,
+          owner_name: f.owner_name,
+          data_url: f.data_url,
+          w: f.w,
+          h: f.h,
+          created_at: f.created_at,
+          likes: f.likes || 0,
+          dislikes: f.dislikes || 0,
+          img,
+          x: Math.max(80, Math.min(W - 80, Math.random() * (W - 160) + 80)),
+          y: Math.max(80, Math.min(H - 80, Math.random() * (H - 160) + 80)),
+          angle: rnd(-Math.PI, Math.PI),
+          speed: rnd(22, 60),
+          turn: rnd(0.8, 2.2),
+          caught: false,
+        });
+      }
     }
-    spritesRef.current = arr;
+    // 缺席的鱼（被钓走或下线）不加入 next，自然被移除
+    spritesRef.current = next;
   }
+
 
   useEffect(() => {
     if (!pondRef.current) return;
