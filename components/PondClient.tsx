@@ -719,14 +719,20 @@ export default function PondClient() {
 /** 处理 DPR 的高分屏适配 */
 function setupHiDPI(canvas: HTMLCanvasElement, w?: number, h?: number) {
   function resize() {
-    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const dpr = Math.max(1, (window as any).devicePixelRatio || 1);
     const rect = canvas.getBoundingClientRect();
-    const cssW = (w ?? Math.floor(rect.width) || EXPORT_W);  // 没有宽就用备选
-    const cssH = (h ?? Math.floor(rect.height) || EXPORT_H);
+
+    // ✅ 不用 ??，兼容更老的解析器
+    const rectW = Math.floor(rect.width) || 0;
+    const rectH = Math.floor(rect.height) || 0;
+    const cssW = (w !== undefined ? w : (rectW || EXPORT_W));
+    const cssH = (h !== undefined ? h : (rectH || EXPORT_H));
+
     canvas.style.width = cssW + 'px';
     canvas.style.height = cssH + 'px';
     canvas.width = Math.floor(cssW * dpr);
     canvas.height = Math.floor(cssH * dpr);
+
     const ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
