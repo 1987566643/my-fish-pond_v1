@@ -1,370 +1,712 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { drawHookIcon, HOOK_SIZE } from './HookIcon';
 
-type ServerFish = { id: string; name: string; data_url: string; w: number; h: number; owner_name: string; created_at: string; likes: number; dislikes: number };
+/** 后端返回的鱼结构（已在 /api/fish GET 中联表 users 并统计 reactions） */
+type ServerFish = {
+  id: string;
+  name: string;
+  data_url: string;
+  w: number;
+  h: number;
+  created_at: string;
+  owner_name: string;
+  likes: number;
+  dislikes: number;
+};
 
+/** 画布里用于渲染/碰撞的精灵 */
+type PondSprite = {
+  id: string;
+  name: string;
+  owner_name: string;
+  data_url: string;
+  w: number;
+  h: number;
+  created_at: string;
+  likes: number;
+  dislikes: number;
 
-function sizeFactor(iso:string, s0=0.7, kPerHour=0.03, sMax=1.8){
-  const hours = (Date.now() - new Date(iso).getTime())/3600000;
+  img: HTMLImageElement;
+  x: number;
+  y: number;
+  angle: number;
+  speed: number; // 像素/秒
+  turn: number;  // 何时转向的倒计时(秒)
+  caught: boolean;
+};
+
+function rnd(min: number, max: number) {
+  return Math.random() * (max - min) + min;
+}
+
+/** 随时间长大：初始0.7，每小时+0.03，上限1.8 */
+function sizeFactor(iso: string, s0 = 0.7, kPerHour = 0.03, sMax = 1.8) {
+  const hours = (Date.now() - new Date(iso).getTime()) / 3_600_000;
   return Math.min(s0 + kPerHour * hours, sMax);
 }
 
-const palette = ["#ffffff","#000000","#ff6b6b","#ffd166","#06d6a0","#4dabf7","#a78bfa","#ff9f1c","#2ec4b6","#8892b0"];
+const palette = [
+  '#ffffff',
+  '#000000',
+  '#ff6b6b',
+  '#ffd166',
+  '#06d6a0',
+  '#4dabf7',
+  '#a78bfa',
+  '#ff9f1c',
+  '#2ec4b6',
+  '#8892b0',
+];
 
-export default function PondClient(){
-  const [hovered, setHovered] = useState<{id:string;x:number;y:number}|null>(null);
+export default function PondClient() {
+  /** 轻提示（无感刷新） */
+  const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
+  function showToast(text: string) {
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    setToasts((t) => [...t, { id, text }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2000);
+  }
+
+  /** 悬浮的提示框定位（在池塘画布内的坐标） */
+  const [hovered, setHovered] = useState<{ id: string; x: number; y: number } | null>(null);
+
+  /** 池塘数据 */
   const pondRef = useRef<HTMLCanvasElement>(null);
   const [pondFish, setPondFish] = useState<ServerFish[]>([]);
   const [myCatchCount, setMyCatchCount] = useState(0);
 
+  /** 画鱼对话框与画布 */
   const drawDlgRef = useRef<HTMLDialogElement>(null);
   const drawCanvasRef = useRef<HTMLCanvasElement>(null);
   const [fishName, setFishName] = useState('');
   const [brush, setBrush] = useState(8);
   const [currentColor, setCurrentColor] = useState(palette[5]);
 
+  /** 钓鱼状态 */
   const [armed, setArmed] = useState(false);
-  const fishingRef = useRef({ hasHook:false, x:0, y:0, biteRadius:20, caughtId:null as null|string });
+  const fishingRef = useRef({
+    hasHook: false,
+    x: 0,
+    y: 0,
+    biteRadius: 20,
+    caughtId: null as null | string,
+  });
 
-  async function refreshAll(){
-    const res = await fetch('/api/fish', { cache:'no-store' });
+  /** 从后端刷新当前池塘鱼和我的收获数 */
+  async function refreshAll() {
+    const res = await fetch('/api/fish', { cache: 'no-store' });
     const json = await res.json();
-    setPondFish(json.fish);
-    const c = await fetch('/api/my-catches', { cache:'no-store' }).then(r=>r.json()).catch(()=>({fish:[]}));
-    setMyCatchCount((c.fish||[]).length);
+    setPondFish(json.fish || []);
+    // 你的后端是 /api/mine 返回我的收获
+    const c = await fetch('/api/mine', { cache: 'no-store' }).then((r) => r.json()).catch(() => ({ fish: [] }));
+    setMyCatchCount((c.fish || []).length);
   }
-  useEffect(()=>{ refreshAll(); initDrawCanvas(); },[]);
 
-  type PondSprite = { id:string; img:HTMLImageElement; name:string; owner_name:string; created_at:string; likes:number; dislikes:number; w:number; h:number; x:number; y:number; angle:number; speed:number; turn:number; caught:boolean; };
+  useEffect(() => {
+    refreshAll();
+    initDrawCanvas();
+  }, []);
+
+  /** ======== 画鱼面板：初始化本地画布绘制 ======== */
+  function initDrawCanvas() {
+    const cvs = drawCanvasRef.current!;
+    if (!cvs) return;
+
+    setupHiDPI(cvs, undefined, 240);
+    const ctx = cvs.getContext('2d')!;
+    (cvs as any)._strokes = (cvs as any)._strokes || [];
+
+    function drawGuides() {
+      // 背景
+      ctx.clearRect(0, 0, cvs.width, cvs.height);
+      ctx.save();
+      ctx.globalAlpha = 0.08;
+      for (let i = 0; i < 6; i++) {
+        ctx.beginPath();
+        ctx.arc(rnd(0, cvs.width), rnd(0, cvs.height), rnd(8, 30), 0, Math.PI * 2);
+        ctx.fillStyle = '#9dd0ff';
+        ctx.fill();
+      }
+      ctx.restore();
+      // 指南：鱼头朝右
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,.25)';
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.moveTo(16, 20);
+      ctx.lineTo(cvs.width - 16, 20);
+      ctx.stroke();
+      ctx.restore();
+
+      // 笔画
+      const strokes: any[] = (cvs as any)._strokes || [];
+      for (const s of strokes) {
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = s.size;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < s.points.length; i++) {
+          const p = s.points[i];
+          if (i === 0) ctx.moveTo(p.x, p.y);
+          else ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+      }
+    }
+
+    let drawing = false;
+    let last: { x: number; y: number } | null = null;
+    let stroke: { color: string; size: number; points: { x: number; y: number }[] } | null = null;
+
+    function down(ev: PointerEvent) {
+      drawing = true;
+      const rect = cvs.getBoundingClientRect();
+      const p = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+      stroke = { color: currentColor, size: brush, points: [p] };
+      (cvs as any)._strokes.push(stroke);
+      last = p;
+      drawGuides();
+    }
+    function move(ev: PointerEvent) {
+      if (!drawing || !last || !stroke) return;
+      const rect = cvs.getBoundingClientRect();
+      const p = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+      stroke.points.push(p);
+      // 局部画线更顺滑
+      ctx.strokeStyle = stroke.color;
+      ctx.lineWidth = stroke.size;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(last.x, last.y);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      last = p;
+    }
+    function up() {
+      drawing = false;
+      last = null;
+      stroke = null;
+    }
+
+    cvs.addEventListener('pointerdown', down);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    (cvs as any).redraw = drawGuides;
+    drawGuides();
+
+    return () => {
+      cvs.removeEventListener('pointerdown', down);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+  }
+
+  function clearDrawing() {
+    const cvs = drawCanvasRef.current!;
+    (cvs as any)._strokes = [];
+    (cvs as any).redraw && (cvs as any).redraw();
+  }
+
+  function undoDrawing() {
+    const cvs = drawCanvasRef.current!;
+    const strokes = ((cvs as any)._strokes as any[]) || [];
+    if (strokes.length) {
+      strokes.pop();
+      (cvs as any).redraw && (cvs as any).redraw();
+    }
+  }
+
+  async function saveFish() {
+    const cvs = drawCanvasRef.current!;
+    const strokes = ((cvs as any)._strokes as any[]) || [];
+    if (!strokes.length) {
+      showToast('先画一条鱼 🙂');
+      return;
+    }
+    // 合成 PNG
+    const off = document.createElement('canvas');
+    off.width = 420;
+    off.height = 240;
+    const g = off.getContext('2d')!;
+    for (const s of strokes) {
+      g.strokeStyle = s.color;
+      g.lineWidth = s.size;
+      g.lineCap = 'round';
+      g.lineJoin = 'round';
+      g.beginPath();
+      for (let i = 0; i < s.points.length; i++) {
+        const p = s.points[i];
+        if (i === 0) g.moveTo(p.x, p.y);
+        else g.lineTo(p.x, p.y);
+      }
+      g.stroke();
+    }
+    const data_url = off.toDataURL('image/png');
+    const name = (fishName || '').trim() || `无名鱼-${String(Date.now()).slice(-5)}`;
+
+    const res = await fetch('/api/fish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, data_url, w: 420, h: 240 }),
+    });
+
+    if (res.ok) {
+      (drawDlgRef.current as HTMLDialogElement)?.close();
+      setFishName('');
+      clearDrawing();
+      await refreshAll();
+      showToast('已保存到池塘');
+    } else {
+      showToast('保存失败');
+    }
+  }
+
+  /** ======== 池塘渲染 ======== */
   const spritesRef = useRef<PondSprite[]>([]);
   const lastTs = useRef(performance.now());
 
-  function rebuildSprites(list:ServerFish[]){
-    const cvs = pondRef.current!; const W = cvs.clientWidth; const H = cvs.clientHeight;
-    spritesRef.current = list.map(f=>{ const img = new Image(); img.src = f.data_url; const scale = rnd(.55,1.1); return { id:f.id, img, name:f.name, owner_name:f.owner_name, created_at:f.created_at, likes:f.likes||0, dislikes:f.dislikes||0, w:f.w*scale, h:f.h*scale, x:rnd(80, W-80), y:rnd(80, H-80), angle:rnd(-Math.PI,Math.PI), speed:rnd(22,60), turn:rnd(.8,2.2), caught:false }; });
+  function rebuildSprites(list: ServerFish[]) {
+    const cvs = pondRef.current!;
+    const W = cvs.clientWidth || 800;
+    const H = cvs.clientHeight || 480;
+    spritesRef.current = list.map((f) => {
+      const img = new Image();
+      img.src = f.data_url;
+      const scale = rnd(0.55, 1.1);
+      return {
+        id: f.id,
+        name: f.name,
+        owner_name: f.owner_name,
+        data_url: f.data_url,
+        w: f.w * scale,
+        h: f.h * scale,
+        created_at: f.created_at,
+        likes: f.likes || 0,
+        dislikes: f.dislikes || 0,
+
+        img,
+        x: rnd(80, Math.max(120, W - 80)),
+        y: rnd(80, Math.max(120, H - 80)),
+        angle: rnd(-Math.PI, Math.PI),
+        speed: rnd(22, 60),
+        turn: rnd(0.8, 2.2),
+        caught: false,
+      };
+    });
   }
 
-  useEffect(()=>{ if(!pondRef.current) return; rebuildSprites(pondFish); },[pondFish]);
+  useEffect(() => {
+    if (!pondRef.current) return;
+    rebuildSprites(pondFish);
+  }, [pondFish]);
 
-  useEffect(()=>{
+  useEffect(() => {
     const cvs = pondRef.current!;
+    if (!cvs) return;
+
     setupHiDPI(cvs);
     const ctx = cvs.getContext('2d')!;
-    let rafId = 0;
-    function frame(ts:number){
-      const dt = Math.min(0.033, (ts - lastTs.current)/1000); lastTs.current = ts;
-      const W = cvs.clientWidth, H = cvs.clientHeight;
-      ctx.clearRect(0,0,W,H);
-      for(let i=0;i<6;i++){
-        ctx.globalAlpha=.08; ctx.beginPath();
-        ctx.arc(rnd(0,W), rnd(0,H), rnd(10,60), 0, Math.PI*2);
-        ctx.fillStyle="#9dd0ff"; ctx.fill(); ctx.globalAlpha=1;
-      }
-      for(const s of spritesRef.current){
-        if(!s.caught){
-          s.turn -= dt; if(s.turn<=0){ s.angle += rnd(-0.5,0.5); s.turn=rnd(0.6,1.8); }
-          s.x += Math.cos(s.angle)*s.speed*dt; s.y += Math.sin(s.angle)*s.speed*dt;
-          const margin=30;
-          if (s.x<margin || s.x>W-margin || s.y<40+margin || s.y>H-40-margin){
-            const cx=W/2, cy=H/2;
-            s.angle = Math.atan2(cy-s.y, cx-s.x) + rnd(-0.25,0.25);
+    let rafId = 0 as number;
+
+    /** 画鱼钩+检测命中 */
+    function drawHookAndCheck(ctx2: CanvasRenderingContext2D) {
+      const f = fishingRef.current;
+      if (!f.hasHook) return;
+      const size = HOOK_SIZE;
+      const eyeY = f.y - size;
+
+      // 绘制钓线
+      ctx2.save();
+      ctx2.strokeStyle = '#c7e8ff';
+      ctx2.lineWidth = 2;
+      ctx2.globalAlpha = 0.9;
+      ctx2.beginPath();
+      ctx2.moveTo(f.x, 0);
+      ctx2.lineTo(f.x, Math.max(0, eyeY));
+      ctx2.stroke();
+      ctx2.restore();
+
+      drawHookIcon(ctx2, f.x, f.y, size);
+
+      // 命中判定
+      if (!f.caughtId) {
+        for (const s of spritesRef.current) {
+          // 鱼嘴近似位置（略偏右上）
+          const mouthX = s.x + Math.cos(s.angle) * (s.w * 0.52);
+          const mouthY = s.y + Math.sin(s.angle) * (s.h * 0.18);
+          const d = Math.hypot(mouthX - f.x, mouthY - f.y);
+          if (d <= f.biteRadius) {
+            s.caught = true;
+            s.x = f.x;
+            s.y = f.y;
+            fishingRef.current.caughtId = s.id;
+            break;
           }
         }
-        ctx.save(); ctx.translate(s.x,s.y); ctx.rotate(s.angle);
-        ctx.drawImage(s.img, -s.w/2, -s.h/2, s.w, s.h); ctx.restore();
+      } else {
+        // 已咬住：在钩子附近微抖
+        const s = spritesRef.current.find((x) => x.id === f.caughtId);
+        if (s) {
+          s.x = f.x + Math.sin(performance.now() / 120) * 1.2;
+          s.y = f.y + Math.cos(performance.now() / 150) * 1.2;
+        }
       }
+    }
+
+    function frame(ts: number) {
+      const dt = Math.min(0.033, (ts - lastTs.current) / 1000);
+      lastTs.current = ts;
+
+      const W = cvs.clientWidth;
+      const H = cvs.clientHeight;
+      ctx.clearRect(0, 0, W, H);
+
+      // 背景气泡
+      for (let i = 0; i < 6; i++) {
+        ctx.globalAlpha = 0.08;
+        ctx.beginPath();
+        ctx.arc(rnd(0, W), rnd(0, H), rnd(10, 60), 0, Math.PI * 2);
+        ctx.fillStyle = '#9dd0ff';
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      // 鱼游动+绘制
+      for (const s of spritesRef.current) {
+        if (!s.caught) {
+          s.turn -= dt;
+          if (s.turn <= 0) {
+            s.angle += rnd(-0.5, 0.5);
+            s.turn = rnd(0.6, 1.8);
+          }
+          s.x += Math.cos(s.angle) * s.speed * dt;
+          s.y += Math.sin(s.angle) * s.speed * dt;
+
+          // 撞边后朝中心拐
+          const margin = 30;
+          if (s.x < margin || s.x > W - margin || s.y < 40 + margin || s.y > H - 40 - margin) {
+            const cx = W / 2,
+              cy = H / 2;
+            s.angle = Math.atan2(cy - s.y, cx - s.x) + rnd(-0.25, 0.25);
+          }
+        }
+        ctx.save();
+        ctx.translate(s.x, s.y);
+        ctx.rotate(s.angle);
+        const k = sizeFactor(s.created_at);
+        ctx.drawImage(s.img, (-s.w * k) / 2, (-s.h * k) / 2, s.w * k, s.h * k);
+        ctx.restore();
+      }
+
       drawHookAndCheck(ctx);
       rafId = requestAnimationFrame(frame);
     }
-    rafId = requestAnimationFrame(frame);
-    const onResize = ()=>setupHiDPI(cvs);
-    window.addEventListener('resize', onResize);
-    return ()=>{ cancelAnimationFrame(rafId); window.removeEventListener('resize', onResize); };
-  },[]);
 
-  function drawHookAndCheck(ctx:CanvasRenderingContext2D){
-    const f = fishingRef.current; if(!f.hasHook) return;
-    const size = HOOK_SIZE, eyeY = f.y - size;
-    ctx.save();
-    ctx.strokeStyle="#c7e8ff"; ctx.lineWidth=2; ctx.globalAlpha=.9;
-    ctx.beginPath(); ctx.moveTo(f.x,0); ctx.lineTo(f.x, Math.max(0, eyeY)); ctx.stroke();
-    ctx.restore();
-    drawHookIcon(ctx, f.x, f.y, size);
-    if (!f.caughtId){
-      for(const s of spritesRef.current){
-        const mx = s.x + Math.cos(s.angle)*(s.w*0.52);
-        const my = s.y + Math.sin(s.angle)*(s.h*0.18);
-        const d = Math.hypot(mx - f.x, my - f.y);
-        if (d <= f.biteRadius){
-          s.caught = true; s.x = f.x; s.y = f.y;
-          f.caughtId = s.id;
+    rafId = requestAnimationFrame(frame);
+
+    // 悬浮检测（计算是否在某鱼的包围盒内）
+    function onMove(ev: PointerEvent) {
+      const rect = cvs.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      let found: null | { id: string; x: number; y: number } = null;
+      for (const s of spritesRef.current) {
+        const k = sizeFactor(s.created_at);
+        const bw = s.w * k;
+        const bh = s.h * k;
+        if (x > s.x - bw / 2 && x < s.x + bw / 2 && y > s.y - bh / 2 && y < s.y + bh / 2) {
+          found = { id: s.id, x, y };
           break;
         }
       }
-    }else{
-      const s = spritesRef.current.find(x=>x.id===f.caughtId);
-      if(s){ s.x = f.x + Math.sin(performance.now()/120)*1.2; s.y = f.y + Math.cos(performance.now()/150)*1.2; }
+      setHovered(found);
     }
-  }
 
-  function armToggle(){ setArmed(a=>!a); }
-  function onPondClick(e:React.MouseEvent<HTMLCanvasElement>){
-    if(!armed) return;
+    const onResize = () => setupHiDPI(cvs);
+    window.addEventListener('resize', onResize);
+    cvs.addEventListener('pointermove', onMove);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', onResize);
+      cvs.removeEventListener('pointermove', onMove);
+    };
+  }, []);
+
+  /** 放下鱼钩 */
+  function armToggle() {
+    setArmed((a) => !a);
+  }
+  function onPondClick(e: React.MouseEvent<HTMLCanvasElement>) {
+    if (!armed) return;
     const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
-    fishingRef.current = { ...fishingRef.current, hasHook:true, x:e.clientX-rect.left, y:e.clientY-rect.top, caughtId:null };
+    fishingRef.current = {
+      ...fishingRef.current,
+      hasHook: true,
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      caughtId: null,
+    };
     setArmed(false);
   }
-  async function reelUp(){
+
+  /** 收钩（若已咬住则尝试 /api/catch） */
+  async function reelUp() {
     const f = fishingRef.current;
-    if(!f.hasHook) return;
-    if(f.caughtId){
-      const res = await fetch('/api/catch', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ fishId:f.caughtId }) });
-      if(res.ok){
-        // 立即从本地删除并刷新远端列表，确保画面同步
-        spritesRef.current = spritesRef.current.filter(s=>s.id!==f.caughtId);
-        setPondFish(prev=>prev.filter(x=>x.id!==f.caughtId));
-        setMyCatchCount(n=>n+1);
-        // 清理钩子状态，防止 drawHook 继续尝试跟随
+    if (!f.hasHook) return;
+
+    if (f.caughtId) {
+      const res = await fetch('/api/catch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fishId: f.caughtId }),
+      });
+
+      if (res.ok) {
+        // 先本地移除，立即无感反馈
+        spritesRef.current = spritesRef.current.filter((s) => s.id !== f.caughtId);
+        setPondFish((prev) => prev.filter((x) => x.id !== f.caughtId));
+        setMyCatchCount((n) => n + 1);
+
+        // 清理钩子状态
         fishingRef.current.caughtId = null;
         fishingRef.current.hasHook = false;
+
+        // 静默同步远端
         await refreshAll();
-        alert('收到一条鱼，已加入你的收获！');
-      }else{
-        alert('这条鱼已被别人抢先钓走了 :(');
-        refreshAll();
+        showToast('收到一条鱼，已加入你的收获！');
+      } else {
+        showToast('这条鱼已被别人抢先钓走了 :(');
+        await refreshAll();
       }
     }
-    fishingRef.current.hasHook=false; fishingRef.current.caughtId=null; fishingRef.current.caughtId=null;
+
+    // 无论成功与否，都收起钩子
+    fishingRef.current.hasHook = false;
+    fishingRef.current.caughtId = null;
   }
 
-  // ===== 修复 TS: drawCanvasRef.current 可能为 null =====
-  useEffect(()=>{
-    const el = drawCanvasRef.current;
-    if (!el) return;
-    const cvs = el as HTMLCanvasElement; // 在闭包顶部收窄为非空
-
-    setupHiDPI(cvs, 420, 240);
-    const ctx = cvs.getContext('2d')!;
-    let drawing=false; let last:{x:number,y:number}|null=null;
-    let strokes:{points:{x:number,y:number}[], color:string, size:number}[]=[];
-    (cvs as any)._strokes = strokes;
-
-    function drawGuides(){
-      ctx.setTransform(devicePixelRatio||1,0,0,devicePixelRatio||1,0,0);
-      ctx.clearRect(0,0,420,240);
-      ctx.save();
-      ctx.setLineDash([6,6]); ctx.strokeStyle="rgba(255,255,255,.10)"; ctx.strokeRect(2,2,416,236);
-      ctx.setLineDash([]);
-      const y=22; ctx.lineWidth=2; ctx.strokeStyle="rgba(255,255,255,.6)";
-      ctx.beginPath(); ctx.moveTo(20,y); ctx.lineTo(120,y); ctx.lineTo(110,y-8); ctx.moveTo(120,y); ctx.lineTo(110,y+8); ctx.stroke();
-      ctx.fillStyle="rgba(255,255,255,.85)"; ctx.font="12px system-ui"; ctx.fillText("鱼头朝右 →", 130, y+4);
-      ctx.restore();
-      for(const s of strokes){ strokePath(ctx,s.points,s.color,s.size); }
-    }
-    drawGuides();
-
-    function pos(ev:PointerEvent){
-      const r=cvs.getBoundingClientRect();
-      const sx=cvs.width/(devicePixelRatio||1)/r.width;
-      const sy=cvs.height/(devicePixelRatio||1)/r.height;
-      return { x:(ev.clientX-r.left)*sx, y:(ev.clientY-r.top)*sy };
-    }
-    function down(ev:PointerEvent){ drawing=true; last=pos(ev); strokes.push({points:[last], color:currentColor, size:brush}); strokePath(ctx,[last],currentColor,brush);  }
-    function move(ev:PointerEvent){ if(!drawing||!last) return; const p=pos(ev); const s=strokes[strokes.length-1]; s.points.push(p); strokePath(ctx,[last,p], s.color, s.size); last=p; }
-    function up(){ drawing=false; last=null; }
-    function strokePath(ctx:CanvasRenderingContext2D, points:{x:number,y:number}[], col:string, size:number){
-      ctx.strokeStyle=col; ctx.lineWidth=size; ctx.lineCap="round"; ctx.lineJoin="round"; ctx.beginPath();
-      for(let i=0;i<points.length;i++){ const p=points[i]; if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); }
-      ctx.stroke();
-    }
-
-    cvs.addEventListener('pointerdown', down); 
-    window.addEventListener('pointermove', move); 
-    window.addEventListener('pointerup', up);
-    (cvs as any).redraw = drawGuides;
-    return ()=>{ 
-      cvs.removeEventListener('pointerdown', down); 
-      window.removeEventListener('pointermove', move); 
-      window.removeEventListener('pointerup', up); 
-    };
-  },[brush,currentColor]);
-
-  function clearDrawing(){ const c = drawCanvasRef.current! as any; c._strokes = []; c.redraw && c.redraw(); }
-  function undoDrawing(){ const c = drawCanvasRef.current! as any; const arr = c._strokes as any[] || []; if(arr.length){ arr.pop(); c.redraw && c.redraw(); } }
-  }
-  async function saveFish(){ const c = drawCanvasRef.current! as any; const strokes = (c._strokes as any[])||[]; if(!strokes.length){ alert('先画一条鱼 🙂'); return; } const off = document.createElement('canvas'); off.width=420; off.height=240; const g = off.getContext('2d')!; for(const s of strokes){ g.strokeStyle=s.color; g.lineWidth=s.size; g.lineCap='round'; g.lineJoin='round'; g.beginPath(); for(let i=0;i<s.points.length;i++){ const p=s.points[i]; if(i===0) g.moveTo(p.x,p.y); else g.lineTo(p.x,p.y);} g.stroke(); } const data_url = off.toDataURL('image/png'); const name = fishName.trim() || `无名鱼-${String(Date.now()).slice(-5)}`; const res = await fetch('/api/fish',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ name, data_url, w:420, h:240 })}); if(res.ok){ (drawDlgRef.current as HTMLDialogElement).close(); setFishName(''); clearDrawing(); refreshAll(); } else { alert('保存失败'); } }
-    const off = document.createElement('canvas'); off.width=420; off.height=240; const g = off.getContext('2d')!;
-    for(const s of strokes){
-      g.strokeStyle=s.color; g.lineWidth=s.size; g.lineCap='round'; g.lineJoin='round'; g.beginPath();
-      for(let i=0;i<s.points.length;i++){ const p=s.points[i]; if(i===0) g.moveTo(p.x,p.y); else g.lineTo(p.x,p.y); } g.stroke();
-    }
-    const data_url = off.toDataURL('image/png');
-    const name = fishName.trim() || `无名鱼-${String(Date.now()).slice(-5)}`;
-    const res = await fetch('/api/fish',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ name, data_url, w:420, h:240 })});
-    if(res.ok){
-      (drawDlgRef.current as HTMLDialogElement).close();
-      setFishName(''); clearDrawing();
-      refreshAll();
-    }else{
-      alert('保存失败');
-    }
+  /** 点赞/点踩 */
+  async function reactToFish(id: string, value: 1 | -1) {
+    await fetch('/api/reaction', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fishId: id, value }),
+    });
+    await refreshAll();
   }
 
   const pondCount = pondFish.length;
 
   return (
     <div>
-      <header style={{display:'flex',gap:8,alignItems:'center',padding:8,borderBottom:'1px solid rgba(255,255,255,.08)'}}>
-        <button className="ghost" onClick={()=>{ initDrawCanvas(); drawDlgRef.current?.showModal(); }}>🎨 画鱼</button>
-        <button className="ghost" onClick={armToggle}>{armed ? '✅ 点击池塘放下鱼钩' : '🎯 放下鱼钩'}</button>
-        <button className="ghost" onClick={reelUp}>⏫ 收回鱼钩</button>
-        <span style={{marginLeft:'auto'}} className="muted">池塘 {pondCount} | 我的收获 {myCatchCount}</span>
+      <header
+        style={{
+          display: 'flex',
+          gap: 8,
+          alignItems: 'center',
+          padding: 8,
+          borderBottom: '1px solid rgba(255,255,255,.08)',
+        }}
+      >
+        <button
+          className="ghost"
+          onClick={() => {
+            const c = drawCanvasRef.current as any;
+            if (c) {
+              c._strokes = [];
+              c.redraw && c.redraw();
+            }
+            drawDlgRef.current?.showModal();
+          }}
+        >
+          🎨 画鱼
+        </button>
+        <button className="ghost" onClick={armToggle}>
+          {armed ? '✅ 点击池塘放下鱼钩' : '🎯 放下鱼钩'}
+        </button>
+        <button className="ghost" onClick={reelUp}>
+          ⏫ 收回鱼钩
+        </button>
+        <span style={{ marginLeft: 'auto' }} className="muted">
+          池塘 {pondCount} | 我的收获 {myCatchCount}
+        </span>
       </header>
-      <div style={{position:'relative',height:'70dvh'}}>
-        <canvas ref={pondRef} onClick={onPondClick} style={{width:'100%',height:'100%',display:'block'}} />
-        {armed && <div style={{position:'absolute',top:10,left:'50%',transform:'translateX(-50%)',padding:'4px 8px',border:'1px solid rgba(255,255,255,.2)',borderRadius:999,background:'rgba(0,0,0,.35)'}}>点击池塘任意位置放下鱼钩</div>}
+
+      <div style={{ position: 'relative', height: '70dvh' }}>
+        <canvas ref={pondRef} onClick={onPondClick} style={{ width: '100%', height: '100%', display: 'block' }} />
+        {armed && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 10,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              padding: '6px 10px',
+              fontSize: 13,
+              borderRadius: 999,
+              background: 'rgba(0,0,0,.35)',
+            }}
+          >
+            点击池塘任意位置放下鱼钩
+          </div>
+        )}
       </div>
 
-      <dialog ref={drawDlgRef} style={{border:'1px solid rgba(255,255,255,.12)',borderRadius:14,background:'linear-gradient(180deg,#0f2236,#0d1e2f)',color:'#cfeaff',width:'min(940px,95vw)'}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 12px',borderBottom:'1px solid rgba(255,255,255,.08)'}}>
+      {/* 画鱼对话框 */}
+      <dialog
+        ref={drawDlgRef}
+        style={{
+          border: '1px solid rgba(255,255,255,.12)',
+          borderRadius: 12,
+          background: 'linear-gradient(180deg,#0f2236,#0d1e2f)',
+          color: '#cfeaff',
+          width: 'min(940px,95vw)',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: 8,
+            alignItems: 'center',
+            padding: '10px 12px',
+            borderBottom: '1px solid rgba(255,255,255,.08)',
+          }}
+        >
           <strong>🎨 画一条鱼（鱼头朝右）</strong>
-          <div style={{display:'flex',gap:8}}>
-            <button className="ghost" onClick={clearDrawing}>清空</button>
-            <button className="ghost" onClick={undoDrawing}>撤销</button>
-            <button className="ghost" onClick={saveFish}>保存到池塘</button>
-            <button className="ghost" onClick={()=>drawDlgRef.current?.close()}>关闭</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="ghost" onClick={clearDrawing}>
+              清空
+            </button>
+            <button className="ghost" onClick={undoDrawing}>
+              撤销
+            </button>
+            <button className="ghost" onClick={saveFish}>
+              保存到池塘
+            </button>
+            <button className="ghost" onClick={() => drawDlgRef.current?.close()}>
+              关闭
+            </button>
           </div>
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 260px',gap:12,padding:12}}>
-          <canvas ref={drawCanvasRef} style={{width:'100%',height:420,background:'#0b1623',border:'1px solid rgba(255,255,255,.12)',borderRadius:8}} />
-          <div style={{display:'grid',gap:10}}>
-            <input value={fishName} onChange={e=>setFishName(e.target.value)} placeholder="给这条鱼起个名字" />
-            <label>粗细 <input type="range" min={2} max={30} step={1} value={brush} onChange={e=>setBrush(Number(e.target.value))} /></label>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 12, padding: 12 }}>
+          <canvas
+            ref={drawCanvasRef}
+            style={{
+              width: '100%',
+              height: 240,
+              background: '#0b1a23',
+              border: '1px solid rgba(255,255,255,.12)',
+              borderRadius: 8,
+            }}
+          />
+          <div style={{ display: 'grid', gap: 10 }}>
+            <input value={fishName} onChange={(e) => setFishName(e.target.value)} placeholder="给这条鱼起个名字" />
+            <label>
+              粗细{' '}
+              <input type="range" min={2} max={30} step={1} value={brush} onChange={(e) => setBrush(Number(e.target.value))} />
+            </label>
             <div>
-              <div className="muted" style={{marginBottom:6}}>颜色</div>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,28px)',gap:6}}>
-                {palette.map(c=>(
-                  <button key={c} onClick={()=>setCurrentColor(c)} title={c} style={{width:28,height:28,borderRadius:8,border:`2px solid ${currentColor===c?'#fff':'rgba(255,255,255,.25)'}`,background:c}} />
+              <div className="muted" style={{ marginBottom: 6 }}>
+                颜色
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,28px)', gap: 6 }}>
+                {palette.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => setCurrentColor(c)}
+                    title={c}
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 8,
+                      border: `2px solid ${currentColor === c ? '#fff' : 'rgba(255,255,255,.25)'}`,
+                      background: c,
+                    }}
+                  />
                 ))}
               </div>
             </div>
             <div className="muted">提示：画时顶部箭头仅作参考，导出不会包含。</div>
           </div>
-        
-{hovered && (()=>{
-  const s = spritesRef.current.find(x=>x.id===hovered.id);
-  if(!s) return null;
-  const ageMs = Date.now() - new Date(s.created_at).getTime();
-  const d = Math.floor(ageMs/86400000), h=Math.floor(ageMs/3600000)%24, m=Math.floor(ageMs/60000)%60;
-  return (
-    <div style={{position:'fixed', left:hovered.x+12, top:hovered.y+12, background:'rgba(0,0,0,.75)', color:'#fff', padding:'8px 10px', borderRadius:8, fontSize:12, pointerEvents:'auto'}}>
-      <div>作者：{s.owner_name}</div>
-      <div>名字：{s.name}</div>
-      <div>已存活：{d}天{h}小时{m}分</div>
-      <div style={{display:'flex', gap:8, marginTop:6}}>
-        <button className="ghost" onClick={async()=>{ await fetch('/api/reaction',{method:'POST',headers:{'Content-Type':'application/json'}, body:JSON.stringify({fishId:s.id, value:1})}); refreshAll();}}>👍 {s.likes}</button>
-        <button className="ghost" onClick={async()=>{ await fetch('/api/reaction',{method:'POST',headers:{'Content-Type':'application/json'}, body:JSON.stringify({fishId:s.id, value:-1})}); refreshAll();}}>👎 {s.dislikes}</button>
-      </div>
-    </div>
-  );
-})()}
-</div>
+        </div>
+
+        {/* 悬浮信息卡 + 点赞/点踩 */}
+        {hovered &&
+          (() => {
+            const s = spritesRef.current.find((x) => x.id === hovered.id);
+            if (!s) return null;
+            const ageMs = Date.now() - new Date(s.created_at).getTime();
+            const d = Math.floor(ageMs / 86400000),
+              h = Math.floor(ageMs / 3600000) % 24,
+              m = Math.floor(ageMs / 60000) % 60;
+            return (
+              <div
+                style={{
+                  position: 'fixed',
+                  left: hovered.x + 12,
+                  top: hovered.y + 12,
+                  background: 'rgba(0,0,0,.75)',
+                  color: '#fff',
+                  padding: '8px 10px',
+                  borderRadius: 8,
+                  fontSize: 12,
+                  pointerEvents: 'auto',
+                }}
+              >
+                <div>作者：{s.owner_name}</div>
+                <div>名字：{s.name}</div>
+                <div>
+                  已存活：{d}天{h}小时{m}分
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                  <button className="ghost" onClick={async () => reactToFish(s.id, 1)}>
+                    👍 {s.likes}
+                  </button>
+                  <button className="ghost" onClick={async () => reactToFish(s.id, -1)}>
+                    👎 {s.dislikes}
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
+        {/* Toasts（无感刷新提示） */}
+        <div
+          className="toast-container"
+          style={{ position: 'fixed', right: 16, top: 16, display: 'grid', gap: 8, zIndex: 1000 }}
+        >
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              style={{
+                background: 'rgba(0,0,0,.75)',
+                color: '#fff',
+                padding: '8px 12px',
+                borderRadius: 8,
+                fontSize: 13,
+                boxShadow: '0 4px 14px rgba(0,0,0,.2)',
+              }}
+            >
+              {t.text}
+            </div>
+          ))}
+        </div>
       </dialog>
     </div>
   );
 }
 
-
-
-// 重新初始化画板：保证每次打开都可用（事件、清空、重绘）
-function initDrawCanvas(){
-  const cvs = drawCanvasRef.current!;
-  const ctx = cvs.getContext('2d')!;
-  const state:any = cvs as any;
-
-  // 若之前绑定过，先解绑旧事件
-  if (state._cleanup) { try { state._cleanup(); } catch {} }
-
-  // 固定尺寸，避免对话框隐藏时 getBoundingClientRect 影响绘制比例
-  const cssW = Math.floor(cvs.clientWidth || 700);
-  const cssH = Math.floor(cvs.clientHeight || 380);
-  const dpr = Math.max(1, window.devicePixelRatio||1);
-  cvs.style.width = cssW + 'px';
-  cvs.style.height = cssH + 'px';
-  cvs.width = Math.floor(cssW * dpr);
-  cvs.height = Math.floor(cssH * dpr);
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-
-  // 画参考线与笔画
-  state._strokes = [];
-  function drawGuides(){
-    ctx.clearRect(0,0,cssW,cssH);
-    ctx.globalAlpha=.12; ctx.fillStyle='#11324b'; ctx.fillRect(0,0,cssW,cssH);
-    ctx.globalAlpha=1;
-    // 画箭头提示（头朝右）
-    ctx.save();
-    ctx.translate(cssW-36, 24);
-    ctx.beginPath(); ctx.moveTo(-20,0); ctx.lineTo(0,-8); ctx.lineTo(0,8); ctx.closePath();
-    ctx.strokeStyle='#4aa3ff'; ctx.lineWidth=2; ctx.stroke();
-    ctx.restore();
-    // 重绘笔画
-    const strokes = state._strokes as any[];
-    for(const s of strokes){
-      ctx.strokeStyle=s.color; ctx.lineWidth=s.size; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.beginPath();
-      for(let i=0;i<s.points.length;i++){ const p=s.points[i]; if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); }
-      ctx.stroke();
-    }
-  }
-  state.redraw = drawGuides;
-  drawGuides();
-
-  let drawing=false; let last:{x:number,y:number}|null=null;
-  function pos(ev:PointerEvent){
-    const r = cvs.getBoundingClientRect();
-    const sx = cvs.width / Math.max(1, r.width);
-    const sy = cvs.height / Math.max(1, r.height);
-    // 由于 setTransform，坐标要除以 dpr
-    return { x:(ev.clientX - r.left) * (sx/dpr), y:(ev.clientY - r.top) * (sy/dpr) };
-  }
-  function strokePath(points:{x:number,y:number}[], col:string, size:number){
-    ctx.strokeStyle=col; ctx.lineWidth=size; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.beginPath();
-    for(let i=0;i<points.length;i++){ const p=points[i]; if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); }
-    ctx.stroke();
-  }
-  function down(ev:PointerEvent){
-    drawing=true; last=pos(ev);
-    const s = { color: currentColor, size: brush, points:[last] as any[] };
-    state._strokes.push(s);
-    strokePath([last], s.color, s.size);
-  }
-  function move(ev:PointerEvent){
-    if(!drawing || !last) return;
-    const p = pos(ev);
-    const strokes = state._strokes as any[];
-    const s = strokes[strokes.length-1];
-    s.points.push(p);
-    strokePath([last, p], s.color, s.size);
-    last = p;
-  }
-  function up(){ drawing=false; last=null; }
-
-  cvs.addEventListener('pointerdown', down);
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', up);
-
-  state._cleanup = ()=>{
-    cvs.removeEventListener('pointerdown', down);
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', up);
-  };
-}
-function rnd(min:number,max:number){ return Math.random()*(max-min)+min; }
-
-function setupHiDPI(canvas:HTMLCanvasElement, w?:number, h?:number){
-  function resize(){
-    const dpr = Math.max(1, (window.devicePixelRatio||1));
+/** 处理 DPR 的高分屏适配 */
+function setupHiDPI(canvas: HTMLCanvasElement, w?: number, h?: number) {
+  function resize() {
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
     const rect = canvas.getBoundingClientRect();
     const cssW = w || Math.floor(rect.width);
     const cssH = h || Math.floor(rect.height || 400);
@@ -373,7 +715,8 @@ function setupHiDPI(canvas:HTMLCanvasElement, w?:number, h?:number){
     canvas.width = Math.floor(cssW * dpr);
     canvas.height = Math.floor(cssH * dpr);
     const ctx = canvas.getContext('2d')!;
-    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
-  resize(); window.addEventListener('resize', resize);
+  resize();
+  window.addEventListener('resize', resize);
 }
