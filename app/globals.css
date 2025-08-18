@@ -1,0 +1,29 @@
+:root{--ink:#cfeaff;--panel:#0f2236;--bg:#0b1a2a;}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  font-family:ui-sans-serif,system-ui,Segoe UI,Roboto;
+  background:radial-gradient(1200px 600px at 50% -10%, #154b7a 0%, #0b1a2a 60%);
+  color:var(--ink)
+}
+a{color:var(--ink);text-decoration:none;opacity:.9}
+.topbar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:.7rem 1rem;border-bottom:1px solid rgba(255,255,255,.08);
+  background:linear-gradient(180deg, rgba(10,25,40,.8), rgba(10,25,40,.3));
+  backdrop-filter:blur(6px)
+}
+.brand{font-weight:800;letter-spacing:.3px}
+.nav{display:flex;gap:.8rem;align-items:center}
+.nav a{padding:.4rem .6rem;border-radius:.5rem;border:1px solid transparent}
+.nav a:hover{border-color:rgba(255,255,255,.18)}
+.nav .primary{border-color:rgba(74,212,255,.5)}
+.ghost{background:transparent;border:1px solid rgba(255,255,255,.2);color:var(--ink);border-radius:.5rem;padding:.35rem .6rem;cursor:pointer}
+.container{padding:1rem;min-height:calc(100dvh - 56px)}
+.panel{background:linear-gradient(180deg, #0f2236, #0d1e2f);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:1rem}
+.grid{display:grid;gap:1rem}
+.muted{opacity:.8}
+button{cursor:pointer}
+input,textarea{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.2);border-radius:.5rem;color:var(--ink);padding:.55rem .7rem}
+textarea{min-height:80px}
