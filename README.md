@@ -76,3 +76,29 @@ CREATE TABLE IF NOT EXISTS messages (
 - 推送到 `main`：构建并部署到 **Production**
 
 > 环境变量（如 `POSTGRES_URL`, `JWT_SECRET`）请在 Vercel 项目 → Settings → Environment Variables 配置。
+
+
+---
+
+### 新增表（点赞/公告）
+```sql
+-- 点赞/点踩记录
+CREATE TABLE IF NOT EXISTS fish_reactions (
+  fish_id UUID NOT NULL REFERENCES fish(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  value   SMALLINT NOT NULL CHECK (value IN (1, -1)),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (fish_id, user_id)
+);
+
+-- 公告事件
+CREATE TABLE IF NOT EXISTS pond_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  type TEXT NOT NULL CHECK (type IN ('ADD','CATCH')),
+  actor_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  target_fish_id UUID REFERENCES fish(id) ON DELETE SET NULL,
+  target_owner_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  extra JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+```

@@ -3,11 +3,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { drawHookIcon, HOOK_SIZE } from './HookIcon';
 
-type ServerFish = { id: string; name: string; data_url: string; w: number; h: number };
+type ServerFish = { id: string; name: string; data_url: string; w: number; h: number; owner_name: string; created_at: string; likes: number; dislikes: number };
+
+
+function sizeFactor(iso:string, s0=0.7, kPerHour=0.03, sMax=1.8){
+  const hours = (Date.now() - new Date(iso).getTime())/3600000;
+  return Math.min(s0 + kPerHour * hours, sMax);
+}
 
 const palette = ["#ffffff","#000000","#ff6b6b","#ffd166","#06d6a0","#4dabf7","#a78bfa","#ff9f1c","#2ec4b6","#8892b0"];
 
 export default function PondClient(){
+  const [hovered, setHovered] = useState<{id:string;x:number;y:number}|null>(null);
   const pondRef = useRef<HTMLCanvasElement>(null);
   const [pondFish, setPondFish] = useState<ServerFish[]>([]);
   const [myCatchCount, setMyCatchCount] = useState(0);
@@ -119,16 +126,21 @@ export default function PondClient(){
     if(f.caughtId){
       const res = await fetch('/api/catch', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ fishId:f.caughtId }) });
       if(res.ok){
+        // 立即从本地删除并刷新远端列表，确保画面同步
         spritesRef.current = spritesRef.current.filter(s=>s.id!==f.caughtId);
         setPondFish(prev=>prev.filter(x=>x.id!==f.caughtId));
         setMyCatchCount(n=>n+1);
+        // 清理钩子状态，防止 drawHook 继续尝试跟随
+        fishingRef.current.caughtId = null;
+        fishingRef.current.hasHook = false;
+        await refreshAll();
         alert('收到一条鱼，已加入你的收获！');
       }else{
         alert('这条鱼已被别人抢先钓走了 :(');
         refreshAll();
       }
     }
-    fishingRef.current.hasHook=false; fishingRef.current.caughtId=null;
+    fishingRef.current.hasHook=false; fishingRef.current.caughtId=null; fishingRef.current.caughtId=null;
   }
 
   // ===== 修复 TS: drawCanvasRef.current 可能为 null =====
@@ -215,7 +227,7 @@ export default function PondClient(){
   return (
     <div>
       <header style={{display:'flex',gap:8,alignItems:'center',padding:8,borderBottom:'1px solid rgba(255,255,255,.08)'}}>
-        <button className="ghost" onClick={()=>drawDlgRef.current?.showModal()}>🎨 画鱼</button>
+        <button className="ghost" onClick={()=>{ const c=drawCanvasRef.current; if(c){ (c as any)._strokes=[]; (c as any).redraw && (c as any).redraw(); } drawDlgRef.current?.showModal(); }}>🎨 画鱼</button>
         <button className="ghost" onClick={armToggle}>{armed ? '✅ 点击池塘放下鱼钩' : '🎯 放下鱼钩'}</button>
         <button className="ghost" onClick={reelUp}>⏫ 收回鱼钩</button>
         <span style={{marginLeft:'auto'}} className="muted">池塘 {pondCount} | 我的收获 {myCatchCount}</span>
@@ -250,7 +262,25 @@ export default function PondClient(){
             </div>
             <div className="muted">提示：画时顶部箭头仅作参考，导出不会包含。</div>
           </div>
-        </div>
+        
+{hovered && (()=>{
+  const s = spritesRef.current.find(x=>x.id===hovered.id);
+  if(!s) return null;
+  const ageMs = Date.now() - new Date(s.created_at).getTime();
+  const d = Math.floor(ageMs/86400000), h=Math.floor(ageMs/3600000)%24, m=Math.floor(ageMs/60000)%60;
+  return (
+    <div style={{position:'fixed', left:hovered.x+12, top:hovered.y+12, background:'rgba(0,0,0,.75)', color:'#fff', padding:'8px 10px', borderRadius:8, fontSize:12, pointerEvents:'auto'}}>
+      <div>作者：{s.owner_name}</div>
+      <div>名字：{s.name}</div>
+      <div>已存活：{d}天{h}小时{m}分</div>
+      <div style={{display:'flex', gap:8, marginTop:6}}>
+        <button className="ghost" onClick={async()=>{ await fetch('/api/reaction',{method:'POST',headers:{'Content-Type':'application/json'}, body:JSON.stringify({fishId:s.id, value:1})}); refreshAll();}}>👍 {s.likes}</button>
+        <button className="ghost" onClick={async()=>{ await fetch('/api/reaction',{method:'POST',headers:{'Content-Type':'application/json'}, body:JSON.stringify({fishId:s.id, value:-1})}); refreshAll();}}>👎 {s.dislikes}</button>
+      </div>
+    </div>
+  );
+})()}
+</div>
       </dialog>
     </div>
   );
