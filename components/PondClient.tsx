@@ -548,8 +548,46 @@ export default function PondClient() {
     await refreshAll();
   }
 
+  // —— 统计数量 —— //
   const pondCount = pondFish.length;
 
+  // —— 悬浮卡片：提前计算一个节点，避免 JSX 里写 IIFE —— //
+  let hoverCard: JSX.Element | null = null;
+  if (hovered) {
+    const s = spritesRef.current.find((x) => x.id === hovered.id);
+    if (s) {
+      const ageMs = Date.now() - new Date(s.created_at).getTime();
+      const d = Math.floor(ageMs / 86400000);
+      const h = Math.floor(ageMs / 3600000) % 24;
+      const m = Math.floor(ageMs / 60000) % 60;
+      hoverCard = (
+        <div
+          style={{
+            position: 'fixed',
+            left: hovered.x + 12,
+            top: hovered.y + 12,
+            background: 'rgba(0,0,0,.75)',
+            color: '#fff',
+            padding: '8px 10px',
+            borderRadius: 8,
+            fontSize: 12,
+            pointerEvents: 'auto',
+            zIndex: 900
+          }}
+        >
+          <div>作者：{s.owner_name}</div>
+          <div>名字：{s.name}</div>
+          <div>已存活：{d}天{h}小时{m}分</div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+            <button className="ghost" onClick={async () => reactToFish(s.id, 1)}>👍 {s.likes}</button>
+            <button className="ghost" onClick={async () => reactToFish(s.id, -1)}>👎 {s.dislikes}</button>
+          </div>
+        </div>
+      );
+    }
+  }
+
+  // —— 渲染 —— //
   return (
     <div>
       <header
@@ -569,7 +607,6 @@ export default function PondClient() {
               c._strokes = [];
               c.redraw && c.redraw();
             }
-            // 打开前确保固定宽高
             if (drawCanvasRef.current) setupHiDPI(drawCanvasRef.current, EXPORT_W, EXPORT_H);
             drawDlgRef.current?.showModal();
           }}
@@ -671,68 +708,40 @@ export default function PondClient() {
                   />
                 ))}
               </div>
+            </div>
+            <div className="muted">提示：画时顶部箭头仅作参考，导出不会包含。</div>
           </div>
         </div>
-
-        {/* 悬浮信息卡 + 点赞/点踩 */}
-        {hovered &&
-          (() => {
-            const s = spritesRef.current.find((x) => x.id === hovered.id);
-            if (!s) return null;
-            const ageMs = Date.now() - new Date(s.created_at).getTime();
-            const d = Math.floor(ageMs / 86400000),
-                  h = Math.floor(ageMs / 3600000) % 24,
-                  m = Math.floor(ageMs / 60000) % 60;
-            return (
-              <div
-                style={{
-                  position: 'fixed',
-                  left: hovered.x + 12,
-                  top: hovered.y + 12,
-                  background: 'rgba(0,0,0,.75)',
-                  color: '#fff',
-                  padding: '8px 10px',
-                  borderRadius: 8,
-                  fontSize: 12,
-                  pointerEvents: 'auto',
-                }}
-              >
-                <div>作者：{s.owner_name}</div>
-                <div>名字：{s.name}</div>
-                <div>已存活：{d}天{h}小时{m}分</div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                  <button className="ghost" onClick={async () => reactToFish(s.id, 1)}>👍 {s.likes}</button>
-                  <button className="ghost" onClick={async () => reactToFish(s.id, -1)}>👎 {s.dislikes}</button>
-                </div>
-              </div>
-            );
-          })()}
-
-        {/* Toasts（无感刷新提示） */}
-        <div
-          className="toast-container"
-          style={{ position: 'fixed', right: 16, top: 16, display: 'grid', gap: 8, zIndex: 1000 }}
-        >
-          {toasts.map((t) => (
-            <div
-              key={t.id}
-              style={{
-                background: 'rgba(0,0,0,.75)',
-                color: '#fff',
-                padding: '8px 12px',
-                borderRadius: 8,
-                fontSize: 13,
-                boxShadow: '0 4px 14px rgba(0,0,0,.2)',
-              }}
-            >
-              {t.text}
-            </div>
-          ))}
-        </div>
       </dialog>
+
+      {/* 悬浮信息卡（放在对话框外，避免层级干扰） */}
+      {hoverCard}
+
+      {/* Toasts 放最外层，避免在 <dialog> 里解析异常 */}
+      <div
+        className="toast-container"
+        style={{ position: 'fixed', right: 16, top: 16, display: 'grid', gap: 8, zIndex: 1000 }}
+      >
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            style={{
+              background: 'rgba(0,0,0,.75)',
+              color: '#fff',
+              padding: '8px 12px',
+              borderRadius: 8,
+              fontSize: 13,
+              boxShadow: '0 4px 14px rgba(0,0,0,.2)',
+            }}
+          >
+            {t.text}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
+
 /** 本地时间每天 4:00 为边界：若当前时间早于 4 点，则用昨日 4 点 */
 function dayBoundary4AM(): Date {
   const now = new Date();
