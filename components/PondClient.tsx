@@ -131,8 +131,12 @@ export default function PondClient(){
     fishingRef.current.hasHook=false; fishingRef.current.caughtId=null;
   }
 
+  // ===== 修复 TS: drawCanvasRef.current 可能为 null =====
   useEffect(()=>{
-    const cvs = drawCanvasRef.current; if(!cvs) return;
+    const el = drawCanvasRef.current;
+    if (!el) return;
+    const cvs = el as HTMLCanvasElement; // 在闭包顶部收窄为非空
+
     setupHiDPI(cvs, 420, 240);
     const ctx = cvs.getContext('2d')!;
     let drawing=false; let last:{x:number,y:number}|null=null;
@@ -153,7 +157,12 @@ export default function PondClient(){
     }
     drawGuides();
 
-    function pos(ev:PointerEvent){ const r=cvs.getBoundingClientRect(); const sx=cvs.width/(devicePixelRatio||1)/r.width; const sy=cvs.height/(devicePixelRatio||1)/r.height; return { x:(ev.clientX-r.left)*sx, y:(ev.clientY-r.top)*sy }; }
+    function pos(ev:PointerEvent){
+      const r=cvs.getBoundingClientRect();
+      const sx=cvs.width/(devicePixelRatio||1)/r.width;
+      const sy=cvs.height/(devicePixelRatio||1)/r.height;
+      return { x:(ev.clientX-r.left)*sx, y:(ev.clientY-r.top)*sy };
+    }
     function down(ev:PointerEvent){ drawing=true; last=pos(ev); strokes.push({points:[last], color:currentColor, size:brush}); strokePath(ctx,[last],currentColor,brush);  }
     function move(ev:PointerEvent){ if(!drawing||!last) return; const p=pos(ev); const s=strokes[strokes.length-1]; s.points.push(p); strokePath(ctx,[last,p], s.color, s.size); last=p; }
     function up(){ drawing=false; last=null; }
@@ -163,9 +172,15 @@ export default function PondClient(){
       ctx.stroke();
     }
 
-    cvs.addEventListener('pointerdown', down); window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+    cvs.addEventListener('pointerdown', down); 
+    window.addEventListener('pointermove', move); 
+    window.addEventListener('pointerup', up);
     (cvs as any).redraw = drawGuides;
-    return ()=>{ cvs.removeEventListener('pointerdown', down); window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); }
+    return ()=>{ 
+      cvs.removeEventListener('pointerdown', down); 
+      window.removeEventListener('pointermove', move); 
+      window.removeEventListener('pointerup', up); 
+    };
   },[brush,currentColor]);
 
   function clearDrawing(){
