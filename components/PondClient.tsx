@@ -577,39 +577,42 @@ export default function PondClient() {
   // —— 悬浮卡片：提前计算一个节点，避免 JSX 里写 IIFE —— //
   let hoverCard: ReactNode = null;
   if (hovered) {
-    const s = spritesRef.current.find((x) => x.id === hovered.id);
-    if (s) {
-      const ageMs = Date.now() - new Date(s.created_at).getTime();
-      const d = Math.floor(ageMs / 86400000);
-      const h = Math.floor(ageMs / 3600000) % 24;
-      const m = Math.floor(ageMs / 60000) % 60;
-      hoverCard = (
-        <div
-          onMouseEnter={() => setHoverLock(true)}
-          onMouseLeave={() => setHoverLock(false)}
-          style={{            position: 'fixed',
-            left: Math.round(hovered.x + 12),
-            top: Math.round(hovered.y + 12),
-            background: 'rgba(0,0,0,.75)',
-            color: '#fff',
-            padding: '8px 10px',
-            borderRadius: 8,
-            fontSize: 12,
-            pointerEvents: 'auto',
-            zIndex: 2000
-          , zIndex: 2000, boxShadow: '0 6px 18px rgba(0,0,0,.3)', border: '1px solid rgba(255,255,255,.15)'}}
-        >
-          <div>作者：{s.owner_name}</div>
-          <div>名字：{s.name}</div>
-          <div>已存活：{d}天{h}小时{m}分</div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-            <button className="ghost" onClick={async () => reactToFish(s.id, 1)}>👍 {s.likes}</button>
-            <button className="ghost" onClick={async () => reactToFish(s.id, -1)}>👎 {s.dislikes}</button>
-          </div>
+  const s = spritesRef.current.find((x) => x.id === hovered.id);
+  if (s) {
+    const ageMs = Date.now() - new Date(s.created_at).getTime();
+    const d = Math.floor(ageMs / 86400000);
+    const h = Math.floor(ageMs / 3600000) % 24;
+    const m = Math.floor(ageMs / 60000) % 60;
+    hoverCard = (
+      <div
+        onMouseEnter={() => setHoverLock(true)}
+        onMouseLeave={() => setHoverLock(false)}
+        style={{
+          position: 'fixed',
+          left: Math.round(hovered.x + 12),
+          top: Math.round(hovered.y + 12),
+          background: 'rgba(0,0,0,.86)',
+          color: '#fff',
+          padding: '8px 10px',
+          borderRadius: 8,
+          fontSize: 12,
+          pointerEvents: 'auto',
+          zIndex: 2000,                         // 只保留一次
+          boxShadow: '0 6px 18px rgba(0,0,0,.3)',
+          border: '1px solid rgba(255,255,255,.15)',
+        }}
+      >
+        <div>作者：{s.owner_name}</div>
+        <div>名字：{s.name}</div>
+        <div>已存活：{d}天{h}小时{m}分</div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+          <button className="ghost" onClick={async () => reactToFish(s.id, 1)}>👍 {s.likes}</button>
+          <button className="ghost" onClick={async () => reactToFish(s.id, -1)}>👎 {s.dislikes}</button>
         </div>
-      );
-    }
+      </div>
+    );
   }
+}
 
   // —— 渲染 —— //
   return (
