@@ -17,8 +17,13 @@ export async function POST(req: Request) {
   const { username, password } = parsed.data;
   const hash = await bcrypt.hash(password, 10);
   try {
-    const { rows } = await sql`INSERT INTO users (username, password_hash) VALUES (${username}, ${hash}) RETURNING id, username`;
-    await setSession(rows[0]);
+    // ✅ 告诉 sql 这条查询会返回哪些字段与类型
+    const { rows } = await sql<{ id: string; username: string }>`
+      INSERT INTO users (username, password_hash)
+      VALUES (${username}, ${hash})
+      RETURNING id, username
+    `;
+    await setSession(rows[0]); // 现在 rows[0] 的类型就是 { id: string; username: string }
     return NextResponse.json({ ok: true });
   } catch (e: any) {
     if (String(e?.message || '').includes('duplicate')) {
