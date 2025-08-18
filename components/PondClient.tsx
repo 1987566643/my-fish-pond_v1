@@ -49,10 +49,11 @@ function rnd(min: number, max: number) {
   return Math.random() * (max - min) + min;
 }
 
-/** 随时间长大：初始 1.0（因为 w/h 已经按 INIT_SCALE 存库），按天增长 */
+/** 随时间长大：初始 1.0（因为 w/h 已按 INIT_SCALE 存库），按天增长 */
 function sizeFactor(iso: string, s0 = 1.0, kPerDay = GROWTH_PER_DAY, sMax = MAX_SCALE) {
   const days = (Date.now() - new Date(iso).getTime()) / 86_400_000;
-  return Math.min(s0 + kPerDay * days, sMax);
+  const v = s0 + kPerDay * days;
+  return v > sMax ? sMax : v;
 }
 
 const palette = [
@@ -83,7 +84,7 @@ export default function PondClient() {
   /** 池塘数据 */
   const pondRef = useRef<HTMLCanvasElement>(null);
   const [pondFish, setPondFish] = useState<ServerFish[]>([]);
-  const [myCatchCount, setMyCatchCount] = useState(0);
+  const [todayCatchCount, setTodayCatchCount] = useState(0);
 
   /** 画鱼对话框与画布 */
   const drawDlgRef = useRef<HTMLDialogElement>(null);
@@ -91,6 +92,12 @@ export default function PondClient() {
   const [fishName, setFishName] = useState('');
   const [brush, setBrush] = useState(8);
   const [currentColor, setCurrentColor] = useState(palette[5]);
+
+  // 关键：用 ref 保持当前颜色/笔刷，避免闭包拿旧值
+  const colorRef = useRef(currentColor);
+  const brushRef = useRef(brush);
+  useEffect(() => { colorRef.current = currentColor; }, [currentColor]);
+  useEffect(() => { brushRef.current = brush; }, [brush]);
 
   /** 钓鱼状态 */
   const [armed, setArmed] = useState(false);
@@ -102,19 +109,26 @@ export default function PondClient() {
     caughtId: null as null | string,
   });
 
-  /** 从后端刷新当前池塘鱼和“我的收获数” */
+  /** 从后端刷新当前池塘鱼和“今日收获数” */
   async function refreshAll() {
     // 池塘
     const res = await fetch('/api/fish', { cache: 'no-store' });
     const json = await res.json();
     setPondFish(json.fish || []);
 
-    // ✅ 用 /api/catch（GET）统计“我钓到的鱼”，而不是 /api/mine
+    // 今日收获：从 /api/catch 取数据，按每天 4:00 起筛选
     try {
       const mineCatch = await fetch('/api/catch', { cache: 'no-store' }).then((r) => r.json());
-      setMyCatchCount((mineCatch.fish || []).length);
+      const list = (mineCatch.fish || []) as { created_at?: string }[];
+      const start = dayBoundary4AM();
+      let count = 0;
+      for (let i = 0; i < list.length; i++) {
+        const t = list[i] && (list[i] as any).created_at;
+        if (t && new Date(t) >= start) count++;
+      }
+      setTodayCatchCount(count);
     } catch {
-      setMyCatchCount(0);
+      setTodayCatchCount(0);
     }
   }
 
@@ -128,7 +142,7 @@ export default function PondClient() {
     const cvs = drawCanvasRef.current!;
     if (!cvs) return;
 
-    // ✅ 初始化时显式设置宽高，避免对话框未开启导致 rect.width=0
+    // 显式设置宽高，避免对话框未开启导致 rect.width=0
     setupHiDPI(cvs, EXPORT_W, EXPORT_H);
     const ctx = cvs.getContext('2d')!;
     (cvs as any)._strokes = (cvs as any)._strokes || [];
@@ -157,7 +171,8 @@ export default function PondClient() {
 
       // 笔画
       const strokes: any[] = (cvs as any)._strokes || [];
-      for (const s of strokes) {
+      for (let si = 0; si < strokes.length; si++) {
+        const s = strokes[si];
         ctx.strokeStyle = s.color;
         ctx.lineWidth = s.size;
         ctx.lineCap = 'round';
@@ -180,7 +195,8 @@ export default function PondClient() {
       drawing = true;
       const rect = cvs.getBoundingClientRect();
       const p = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
-      stroke = { color: currentColor, size: brush, points: [p] };
+      // 使用 ref 的最新值
+      stroke = { color: colorRef.current, size: brushRef.current, points: [p] };
       (cvs as any)._strokes.push(stroke);
       last = p;
       drawGuides();
@@ -248,7 +264,8 @@ export default function PondClient() {
     off.width = EXPORT_W;
     off.height = EXPORT_H;
     const g = off.getContext('2d')!;
-    for (const s of strokes) {
+    for (let si = 0; si < strokes.length; si++) {
+      const s = strokes[si];
       g.strokeStyle = s.color;
       g.lineWidth = s.size;
       g.lineCap = 'round';
@@ -284,7 +301,7 @@ export default function PondClient() {
     });
 
     if (res.ok) {
-      (drawDlgRef.current as HTMLDialogElement)?.close();
+      if (drawDlgRef.current) (drawDlgRef.current as HTMLDialogElement).close();
       setFishName('');
       clearDrawing();
       await refreshAll();
@@ -302,21 +319,21 @@ export default function PondClient() {
     const cvs = pondRef.current!;
     const W = cvs.clientWidth || 800;
     const H = cvs.clientHeight || 480;
-    spritesRef.current = list.map((f) => {
+    const arr: PondSprite[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
       const img = new Image();
       img.src = f.data_url;
-      const scale = 1.0; // 初始体型已存库，这里不再随机
-      return {
+      arr.push({
         id: f.id,
         name: f.name,
         owner_name: f.owner_name,
         data_url: f.data_url,
-        w: f.w * scale,
-        h: f.h * scale,
+        w: f.w, // 初始体型已存库，这里不再随机
+        h: f.h,
         created_at: f.created_at,
         likes: f.likes || 0,
         dislikes: f.dislikes || 0,
-
         img,
         x: rnd(80, Math.max(120, W - 80)),
         y: rnd(80, Math.max(120, H - 80)),
@@ -324,8 +341,9 @@ export default function PondClient() {
         speed: rnd(22, 60),
         turn: rnd(0.8, 2.2),
         caught: false,
-      };
-    });
+      });
+    }
+    spritesRef.current = arr;
   }
 
   useEffect(() => {
@@ -363,8 +381,8 @@ export default function PondClient() {
 
       // 命中判定
       if (!f.caughtId) {
-        for (const s of spritesRef.current) {
-          // 鱼嘴近似位置（略偏右上）
+        for (let i = 0; i < spritesRef.current.length; i++) {
+          const s = spritesRef.current[i];
           const mouthX = s.x + Math.cos(s.angle) * (s.w * 0.52);
           const mouthY = s.y + Math.sin(s.angle) * (s.h * 0.18);
           const d = Math.hypot(mouthX - f.x, mouthY - f.y);
@@ -405,7 +423,8 @@ export default function PondClient() {
       }
 
       // 鱼游动+绘制
-      for (const s of spritesRef.current) {
+      for (let i = 0; i < spritesRef.current.length; i++) {
+        const s = spritesRef.current[i];
         if (!s.caught) {
           s.turn -= dt;
           if (s.turn <= 0) {
@@ -442,7 +461,8 @@ export default function PondClient() {
       const x = ev.clientX - rect.left;
       const y = ev.clientY - rect.top;
       let found: null | { id: string; x: number; y: number } = null;
-      for (const s of spritesRef.current) {
+      for (let i = 0; i < spritesRef.current.length; i++) {
+        const s = spritesRef.current[i];
         const k = sizeFactor(s.created_at);
         const bw = s.w * k;
         const bh = s.h * k;
@@ -498,7 +518,7 @@ export default function PondClient() {
         // 先本地移除，立即无感反馈
         spritesRef.current = spritesRef.current.filter((s) => s.id !== f.caughtId);
         setPondFish((prev) => prev.filter((x) => x.id !== f.caughtId));
-        setMyCatchCount((n) => n + 1);
+        setTodayCatchCount((n) => n + 1); // 今日收获 +1（最终仍以 refreshAll 为准）
 
         // 清理钩子状态
         fishingRef.current.caughtId = null;
@@ -549,8 +569,8 @@ export default function PondClient() {
               c._strokes = [];
               c.redraw && c.redraw();
             }
-            // 打开前再确保有固定宽高，避免 0 宽
-            setupHiDPI(drawCanvasRef.current!, EXPORT_W, EXPORT_H);
+            // 打开前确保固定宽高
+            if (drawCanvasRef.current) setupHiDPI(drawCanvasRef.current, EXPORT_W, EXPORT_H);
             drawDlgRef.current?.showModal();
           }}
         >
@@ -563,7 +583,7 @@ export default function PondClient() {
           ⏫ 收回鱼钩
         </button>
         <span style={{ marginLeft: 'auto' }} className="muted">
-          池塘 {pondCount} | 我的收获 {myCatchCount}
+          池塘 {pondCount} | 今日收获 {todayCatchCount}
         </span>
       </header>
 
@@ -621,7 +641,7 @@ export default function PondClient() {
           <canvas
             ref={drawCanvasRef}
             style={{
-              width: EXPORT_W,        // ✅ 指定固定宽高，防止 0 尺寸
+              width: EXPORT_W,
               height: EXPORT_H,
               background: '#0b1a23',
               border: '1px solid rgba(255,255,255,.12)',
@@ -651,12 +671,10 @@ export default function PondClient() {
                   />
                 ))}
               </div>
-            </div>
-            <div className="muted">提示：画时顶部箭头仅作参考，导出不会包含。</div>
           </div>
         </div>
 
-        {/* 悬浮信息卡 + 点赞/点踩（放在对话框外也行，这里沿用现有逻辑） */}
+        {/* 悬浮信息卡 + 点赞/点踩 */}
         {hovered &&
           (() => {
             const s = spritesRef.current.find((x) => x.id === hovered.id);
@@ -715,14 +733,21 @@ export default function PondClient() {
     </div>
   );
 }
-
-/** 处理 DPR 的高分屏适配 */
+/** 本地时间每天 4:00 为边界：若当前时间早于 4 点，则用昨日 4 点 */
+function dayBoundary4AM(): Date {
+  const now = new Date();
+  const boundary = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 4, 0, 0, 0);
+  if (now.getTime() < boundary.getTime()) {
+    boundary.setDate(boundary.getDate() - 1);
+  }
+  return boundary;
+}
+/** 处理 DPR 的高分屏适配（避免使用 ??） */
 function setupHiDPI(canvas: HTMLCanvasElement, w?: number, h?: number) {
   function resize() {
     const dpr = Math.max(1, (window as any).devicePixelRatio || 1);
     const rect = canvas.getBoundingClientRect();
 
-    // ✅ 不用 ??，兼容更老的解析器
     const rectW = Math.floor(rect.width) || 0;
     const rectH = Math.floor(rect.height) || 0;
     const cssW = (w !== undefined ? w : (rectW || EXPORT_W));
