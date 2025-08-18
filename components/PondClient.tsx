@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { drawHookIcon, HOOK_SIZE } from './HookIcon';
 
 /** ================== 可调参数 ================== */
@@ -552,7 +553,7 @@ export default function PondClient() {
   const pondCount = pondFish.length;
 
   // —— 悬浮卡片：提前计算一个节点，避免 JSX 里写 IIFE —— //
-  let hoverCard: JSX.Element | null = null;
+  let hoverCard: ReactNode = null;
   if (hovered) {
     const s = spritesRef.current.find((x) => x.id === hovered.id);
     if (s) {
@@ -709,7 +710,6 @@ export default function PondClient() {
                 ))}
               </div>
             </div>
-            <div className="muted">提示：画时顶部箭头仅作参考，导出不会包含。</div>
           </div>
         </div>
       </dialog>
