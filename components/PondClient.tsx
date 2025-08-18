@@ -37,17 +37,13 @@ export default function PondClient(){
   }
   useEffect(()=>{ refreshAll(); },[]);
 
-  type PondSprite = { id:string; img:HTMLImageElement; w:number; h:number; x:number; y:number; angle:number; speed:number; turn:number; caught:boolean; };
+  type PondSprite = { id:string; img:HTMLImageElement; name:string; owner_name:string; created_at:string; likes:number; dislikes:number; w:number; h:number; x:number; y:number; angle:number; speed:number; turn:number; caught:boolean; };
   const spritesRef = useRef<PondSprite[]>([]);
   const lastTs = useRef(performance.now());
 
   function rebuildSprites(list:ServerFish[]){
     const cvs = pondRef.current!; const W = cvs.clientWidth; const H = cvs.clientHeight;
-    spritesRef.current = list.map(f=>{
-      const img = new Image(); img.src = f.data_url;
-      const scale = rnd(.55, 1.1);
-      return { id:f.id, img, w:f.w*scale, h:f.h*scale, x:rnd(f.w, W-f.w), y:rnd(40+f.h/2, H-40-f.h/2), angle:rnd(0,Math.PI*2), speed:rnd(22,60), turn:rnd(.8,2.2), caught:false };
-    });
+    spritesRef.current = list.map(f=>{ const img = new Image(); img.src = f.data_url; const scale = rnd(.55,1.1); return { id:f.id, img, name:f.name, owner_name:f.owner_name, created_at:f.created_at, likes:f.likes||0, dislikes:f.dislikes||0, w:f.w*scale, h:f.h*scale, x:rnd(80, W-80), y:rnd(80, H-80), angle:rnd(-Math.PI,Math.PI), speed:rnd(22,60), turn:rnd(.8,2.2), caught:false }; });
   }
 
   useEffect(()=>{ if(!pondRef.current) return; rebuildSprites(pondFish); },[pondFish]);
