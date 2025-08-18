@@ -81,6 +81,7 @@ export default function PondClient() {
 
   /** 悬浮的提示框定位（在池塘画布内的坐标） */
   const [hovered, setHovered] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [hoverLock, setHoverLock] = useState(false);
 
   /** 池塘数据 */
   const pondRef = useRef<HTMLCanvasElement>(null);
@@ -306,6 +307,7 @@ export default function PondClient() {
       setFishName('');
       clearDrawing();
       await refreshAll();
+      try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
       showToast('已保存到池塘');
     } else {
       showToast('保存失败');
@@ -458,6 +460,7 @@ export default function PondClient() {
 
     // 悬浮检测（计算是否在某鱼的包围盒内）
     function onMove(ev: PointerEvent) {
+      if (hoverLock) return;
       const rect = cvs.getBoundingClientRect();
       const x = ev.clientX - rect.left;
       const y = ev.clientY - rect.top;
@@ -527,6 +530,7 @@ export default function PondClient() {
 
         // 静默同步远端
         await refreshAll();
+        try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
         showToast('收到一条鱼，已加入你的收获！');
       } else {
         showToast('这条鱼已被别人抢先钓走了 :(');
@@ -549,7 +553,25 @@ export default function PondClient() {
     await refreshAll();
   }
 
-  // —— 统计数量 —— //
+  
+  // —— 全局无感刷新：当其他用户放鱼/钓鱼时，定时刷新（同时提供给公告栏一个全局事件） —— //
+  useEffect(() => {
+    const tick = () => {
+      refreshAll().then(() => {
+        try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
+      });
+    };
+    const iv = setInterval(tick, 5000); // 每 5 秒刷新一次
+    const onVis = () => { if (document.visibilityState === 'visible') tick(); };
+    window.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', tick);
+    return () => {
+      clearInterval(iv);
+      window.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', tick);
+    };
+  }, []);
+// —— 统计数量 —— //
   const pondCount = pondFish.length;
 
   // —— 悬浮卡片：提前计算一个节点，避免 JSX 里写 IIFE —— //
@@ -563,18 +585,19 @@ export default function PondClient() {
       const m = Math.floor(ageMs / 60000) % 60;
       hoverCard = (
         <div
-          style={{
-            position: 'fixed',
-            left: hovered.x + 12,
-            top: hovered.y + 12,
+          onMouseEnter={() => setHoverLock(true)}
+          onMouseLeave={() => setHoverLock(false)}
+          style={{            position: 'fixed',
+            left: Math.round(hovered.x + 12),
+            top: Math.round(hovered.y + 12),
             background: 'rgba(0,0,0,.75)',
             color: '#fff',
             padding: '8px 10px',
             borderRadius: 8,
             fontSize: 12,
             pointerEvents: 'auto',
-            zIndex: 900
-          }}
+            zIndex: 2000
+          , zIndex: 2000, boxShadow: '0 6px 18px rgba(0,0,0,.3)', border: '1px solid rgba(255,255,255,.15)'}}
         >
           <div>作者：{s.owner_name}</div>
           <div>名字：{s.name}</div>
