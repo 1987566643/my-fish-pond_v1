@@ -59,20 +59,21 @@ export default function MyMineClient() {
 
   async function load() {
     setLoading(true);
-    const [a, b] = await Promise.all([
-      fetch('/api/mine', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ fish: [] })),
-      fetch('/api/my-catches', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ fish: [] })),
-    ]);
-    setMine((a?.fish ?? []) as MyFish[]);
-    setCatches((b?.fish ?? []) as MyCatch[]);
-    setLoading(false);
+    try {
+      const [a, b] = await Promise.all([
+        fetch('/api/mine', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ fish: [] })),
+        fetch('/api/my-catches', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ fish: [] })),
+      ]);
+      setMine((a?.fish ?? []) as MyFish[]);
+      setCatches((b?.fish ?? []) as MyCatch[]);
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
+    // 首次加载；不再监听 pond:refresh，避免“我的”页跳动
     load();
-    const onRefresh = () => load();
-    window.addEventListener('pond:refresh', onRefresh);
-    return () => window.removeEventListener('pond:refresh', onRefresh);
   }, []);
 
   // —— 删除我的鱼：不广播，只本地通知池塘移除 —— //
@@ -89,29 +90,34 @@ export default function MyMineClient() {
     setDeleting(prev => new Set(prev).add(fishId));
     try {
       const res = await fetch(`/api/fish/${fishId}`, { method: 'DELETE' });
-      if (!res.ok) {
+
+      if (res.ok) {
+        show('已删除这条鱼');
+      } else {
+        // 解析 reason
         let reason = '';
         try { const j = await res.json(); reason = j?.error || ''; } catch {}
-        const idempotent = new Set(['forbidden_or_not_in_pond', 'not_found']);
-        if (idempotent.has(reason)) {
+        // 幂等/已处理的错误都视为“已删除成功”，不回滚不刷屏
+        if (res.status === 403 || res.status === 404 || res.status === 409) {
           show('已删除这条鱼');
-          return;
+        } else if (['forbidden_or_not_in_pond', 'not_found', 'already_deleted'].includes(reason)) {
+          show('已删除这条鱼');
+        } else if (res.status >= 500) {
+          show('服务器繁忙，稍后再试');
+        } else {
+          // 其他少见情况：提示但不回插，避免跳动
+          show('删除失败，请稍后重试');
         }
-        show('删除失败，请稍后重试');
-        // 回滚：仅提示用户刷新，不强制回插 UI（避免状态错乱）
-        return;
       }
-      show('已删除这条鱼');
     } catch {
+      // 网络异常：提示但不回插
       show('网络异常，删除失败');
     } finally {
-      setDeleting(prev => {
-        const s = new Set(prev); s.delete(fishId); return s;
-      });
+      setDeleting(prev => { const s = new Set(prev); s.delete(fishId); return s; });
     }
   }
 
-  // —— 放回池塘：乐观更新 + 广播 pond:refresh —— //
+  // —— 放回池塘：乐观更新 + 广播 pond:refresh（池塘与公告栏刷新） —— //
   async function releaseFish(fishId: string) {
     if (releasing.has(fishId)) return;
 
@@ -126,27 +132,31 @@ export default function MyMineClient() {
         body: JSON.stringify({ fishId }),
       });
 
-      if (!res.ok) {
+      if (res.ok) {
+        show('已放回池塘');
+      } else {
+        // 解析 reason
         let reason = '';
         try { const j = await res.json(); reason = j?.error || ''; } catch {}
-        const idempotent = new Set(['not_your_catch', 'already_released', 'forbidden_or_not_in_pond', 'not_found']);
-        if (idempotent.has(reason)) {
+        // 幂等/已处理的返回：按成功处理，避免误报
+        if (res.status === 403 || res.status === 404 || res.status === 409) {
           show('已放回池塘');
+        } else if (['not_your_catch', 'already_released', 'forbidden_or_not_in_pond', 'not_found'].includes(reason)) {
+          show('已放回池塘');
+        } else if (res.status >= 500) {
+          show('服务器繁忙，稍后再试');
         } else {
+          // 少见情况：提示但不把卡片加回，避免跳动
           show('放回失败，请稍后重试');
         }
-      } else {
-        show('已放回池塘');
       }
 
-      // 广播：让池塘与公告栏按照你现有逻辑刷新
+      // 广播：让池塘与公告栏刷新（“我的”页不再监听这个事件）
       try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
     } catch {
       show('网络异常，放回失败');
     } finally {
-      setReleasing(prev => {
-        const s = new Set(prev); s.delete(fishId); return s;
-      });
+      setReleasing(prev => { const s = new Set(prev); s.delete(fishId); return s; });
     }
   }
 
@@ -159,8 +169,7 @@ export default function MyMineClient() {
     name: string;
     meta?: string;
     actions?: React.ReactNode;
-    dim?: boolean; // 可选：置灰
-    busy?: boolean; // 可选：进行中
+    busy?: boolean;
   }) => (
     <div
       style={{
@@ -236,7 +245,7 @@ export default function MyMineClient() {
                       ? '状态：池塘中'
                       : f.angler_username
                         ? `已被 ${f.angler_username} 在 ${f.caught_at ? new Date(f.caught_at).toLocaleString() : '未知时间'} 钓走`
-                       : '状态：已被钓走'
+                        : '状态：已被钓走'
                   }
                   busy={deleting.has(f.id)}
                   actions={
