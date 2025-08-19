@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { sql } from '../../lib/db';
+import { sql } from '../../../lib/db';
 
 export async function GET() {
   const { rows } = await sql/*sql*/`
@@ -12,4 +12,5 @@ export async function GET() {
     LIMIT 50
   `;
   return NextResponse.json({ ok: true, events: rows });
+
 }
