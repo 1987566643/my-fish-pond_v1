@@ -113,20 +113,25 @@ export default function PondClient() {
 
   /** 从后端刷新当前池塘鱼和“今日收获数” */
   async function refreshAll() {
-    // 池塘
+    // —— 刷新池塘 —— //
     const res = await fetch('/api/fish', { cache: 'no-store' });
     const json = await res.json();
     setPondFish(json.fish || []);
-
-    // 今日收获：直接读后端 today_catch
+  
+    // —— 刷新今日收获 —— //
     try {
-      const data = await fetch('/api/catch', { cache: 'no-store' }).then(r => r.json());
-      if (typeof data.today_catch === 'number') {
-        setTodayCatchCount(data.today_catch);
+      const mineCatch = await fetch('/api/catch', { cache: 'no-store' }).then((r) => r.json());
+      if (mineCatch && mineCatch.ok) {
+        setTodayCatchCount(mineCatch.today_catch ?? 0);
+      } else {
+        setTodayCatchCount(0);
       }
-    } catch {
-      // 失败就不动，或 setTodayCatchCount(0)
+    } catch (e) {
+      console.error('refreshAll /api/catch failed', e);
+      setTodayCatchCount(0);
     }
+  }
+
 
 
   useEffect(() => {
