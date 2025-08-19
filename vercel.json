@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/reset-today-catch?token=__CRON_SECRET__",
+      "schedule": "0 20 * * *"
+    }
+  ]
+}
