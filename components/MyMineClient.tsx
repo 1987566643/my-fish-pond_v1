@@ -8,18 +8,21 @@ type MyFish = {
   data_url: string;
   w: number;
   h: number;
-  in_pond?: boolean;
-  created_at?: string;
+  in_pond: boolean;
+  created_at?: string | null;
+  angler_username?: string | null;   // ← 新增：最近一次钓走者
+  caught_at?: string | null;         // ← 新增：最近一次被钓走时间
 };
 
 type MyCatch = {
   catch_id: string;
   fish_id: string;
   name: string;
+  owner_username?: string | null;    // ← 新增：鱼原主人
   data_url: string;
   w: number;
   h: number;
-  caught_at?: string;
+  caught_at?: string | null;
 };
 
 export default function MyMineClient() {
@@ -33,8 +36,8 @@ export default function MyMineClient() {
       fetch('/api/mine', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ fish: [] })),
       fetch('/api/my-catches', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ fish: [] })),
     ]);
-    setMine((a && a.fish) ? a.fish : []);
-    setCatches((b && b.fish) ? b.fish : []);
+    setMine((a?.fish ?? []) as MyFish[]);
+    setCatches((b?.fish ?? []) as MyCatch[]);
     setLoading(false);
   }
 
@@ -74,8 +77,8 @@ export default function MyMineClient() {
   }
 
   const Card = (props: { title: string; children: React.ReactNode }) => (
-    <section style={{ marginBottom: 18 }}>
-      <h2 style={{ fontSize: 16, margin: '0 0 10px' }}>{props.title}</h2>
+    <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <h2 style={{ fontSize: 16, margin: 0 }}>{props.title}</h2>
       <div
         style={{
           display: 'grid',
@@ -89,7 +92,7 @@ export default function MyMineClient() {
   );
 
   const Tile = (props: {
-    img: string; name: string; meta?: string; actions?: React.ReactNode;
+    img?: string; name: string; meta?: string; actions?: React.ReactNode;
   }) => (
     <div
       style={{
@@ -102,17 +105,28 @@ export default function MyMineClient() {
       }}
     >
       <div style={{ position: 'relative', paddingTop: '60%', background: '#0b1a23' }}>
-        <img
-          src={props.img}
-          alt={props.name}
-          style={{
-            position: 'absolute', inset: 0, width: '100%', height: '100%',
-            objectFit: 'contain', imageRendering: 'auto'
-          }}
-        />
+        {props.img ? (
+          <img
+            src={props.img}
+            alt={props.name}
+            style={{
+              position: 'absolute', inset: 0, width: '100%', height: '100%',
+              objectFit: 'contain', imageRendering: 'auto'
+            }}
+          />
+        ) : (
+          <div
+            style={{
+              position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
+              color: '#88a', fontSize: 12
+            }}
+          >
+            无缩略图
+          </div>
+        )}
       </div>
       <div style={{ padding: 10, display: 'grid', gap: 6 }}>
-        <div style={{ fontWeight: 600 }}>{props.name}</div>
+        <div style={{ fontWeight: 600 }}>{props.name || '无名鱼'}</div>
         {props.meta && <div className="muted" style={{ fontSize: 12 }}>{props.meta}</div>}
         {props.actions && <div style={{ display: 'flex', gap: 8 }}>{props.actions}</div>}
       </div>
@@ -120,49 +134,48 @@ export default function MyMineClient() {
   );
 
   return (
-    <div>
-      <div style={{ margin: '6px 0 14px', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <span className="muted">我画的鱼：{mine.length} 条</span>
-        <span className="muted">我的收获：{catches.length} 条</span>
-      </div>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      {/* 左：我画的鱼 */}
+      <Card title={`我画的鱼（${mine.length}）`}>
+        {loading && <div className="muted">加载中…</div>}
+        {!loading && mine.length === 0 && <div className="muted">暂无</div>}
+        {!loading && mine.map(f => (
+          <Tile
+            key={f.id}
+            img={f.data_url}
+            name={f.name || '无名鱼'}
+            meta={
+              f.in_pond
+                ? '状态：池塘中'
+                : f.angler_username
+                  ? `已被 ${f.angler_username} 在 ${f.caught_at ? new Date(f.caught_at).toLocaleString() : '未知时间'} 钓走`
+                  : '状态：已被钓走'
+            }
+            actions={
+              f.in_pond ? (
+                <button className="ghost" onClick={() => deleteMyFish(f.id)}>🗑 删除</button>
+              ) : null
+            }
+          />
+        ))}
+      </Card>
 
-      {loading && <div className="muted">加载中…</div>}
-
-      {!loading && (
-        <>
-          <Card title="我画的鱼">
-            {mine.length === 0 && <div className="muted">暂无</div>}
-            {mine.map(f => (
-              <Tile
-                key={f.id}
-                img={f.data_url}
-                name={f.name || '无名鱼'}
-                meta={typeof f.in_pond === 'boolean' ? (f.in_pond ? '状态：池塘中' : '状态：已被钓走') : undefined}
-                actions={
-                  f.in_pond ? (
-                    <button className="ghost" onClick={() => deleteMyFish(f.id)}>🗑 删除</button>
-                  ) : null
-                }
-              />
-            ))}
-          </Card>
-
-          <Card title="我的收获">
-            {catches.length === 0 && <div className="muted">暂无</div>}
-            {catches.map(c => (
-              <Tile
-                key={c.catch_id}
-                img={c.data_url}
-                name={c.name || '无名鱼'}
-                meta={c.caught_at ? `钓到时间：${new Date(c.caught_at).toLocaleString()}` : undefined}
-                actions={
-                  <button className="ghost" onClick={() => releaseFish(c.fish_id)}>🪣 放回池塘</button>
-                }
-              />
-            ))}
-          </Card>
-        </>
-      )}
+      {/* 右：我的收获 */}
+      <Card title={`我的收获（${catches.length}）`}>
+        {loading && <div className="muted">加载中…</div>}
+        {!loading && catches.length === 0 && <div className="muted">暂无</div>}
+        {!loading && catches.map(c => (
+          <Tile
+            key={c.catch_id}
+            img={c.data_url}
+            name={c.name || '无名鱼'}
+            meta={`来自 ${c.owner_username || '未知'}${c.caught_at ? ` · ${new Date(c.caught_at).toLocaleString()}` : ''}`}
+            actions={
+              <button className="ghost" onClick={() => releaseFish(c.fish_id)}>🪣 放回池塘</button>
+            }
+          />
+        ))}
+      </Card>
     </div>
   );
 }
