@@ -10,15 +10,15 @@ type MyFish = {
   h: number;
   in_pond: boolean;
   created_at?: string | null;
-  angler_username?: string | null;   // 最近一次钓走者
-  caught_at?: string | null;         // 最近一次被钓走时间
+  angler_username?: string | null;
+  caught_at?: string | null;
 };
 
 type MyCatch = {
   catch_id: string;
   fish_id: string;
   name: string;
-  owner_username?: string | null;    // 鱼原主人
+  owner_username?: string | null;
   data_url: string;
   w: number;
   h: number;
@@ -54,8 +54,8 @@ export default function MyMineClient() {
   const { Toast, show } = useToast();
 
   // 进行中集合，避免重复提交
-  const [releasing, setReleasing] = useState<Set<string>>(new Set());
-  const [deleting, setDeleting] = useState<Set<string>>(new Set());
+  const [releasing, setReleasing] = useState<Set<string>>(new Set()); // key: fishId
+  const [deleting, setDeleting] = useState<Set<string>>(new Set());   // key: fishId
 
   async function load() {
     setLoading(true);
@@ -72,59 +72,47 @@ export default function MyMineClient() {
   }
 
   useEffect(() => {
-    // 首次加载；不再监听 pond:refresh，避免“我的”页跳动
-    load();
+    load(); // “我的”页不再监听 pond:refresh，避免跳动
   }, []);
 
-  // —— 删除我的鱼：不广播，只本地通知池塘移除 —— //
+  /** 删除我的鱼：等待后端成功后再移除，并定向让池塘隐藏该鱼 */
   async function deleteMyFish(fishId: string) {
     if (!confirm('确定删除这条还在池塘里的鱼吗？删除后不可恢复。')) return;
     if (deleting.has(fishId)) return;
-
-    // 乐观删除 + 定向移除池塘里的该鱼
-    setMine(list => list.filter(f => f.id !== fishId));
-    try {
-      window.dispatchEvent(new CustomEvent('pond:remove_fish', { detail: { fishId } }));
-    } catch {}
 
     setDeleting(prev => new Set(prev).add(fishId));
     try {
       const res = await fetch(`/api/fish/${fishId}`, { method: 'DELETE' });
 
       if (res.ok) {
+        // 成功：从我的列表移除
+        setMine(list => list.filter(f => f.id !== fishId));
+        // 定向通知池塘隐藏这条鱼（不全局刷新）
+        try { window.dispatchEvent(new CustomEvent('pond:remove_fish', { detail: { fishId } })); } catch {}
         show('已删除这条鱼');
       } else {
-        // 解析 reason
+        // 解析错误
         let reason = '';
         try { const j = await res.json(); reason = j?.error || ''; } catch {}
-        // 幂等/已处理的错误都视为“已删除成功”，不回滚不刷屏
-        if (res.status === 403 || res.status === 404 || res.status === 409) {
-          show('已删除这条鱼');
-        } else if (['forbidden_or_not_in_pond', 'not_found', 'already_deleted'].includes(reason)) {
-          show('已删除这条鱼');
-        } else if (res.status >= 500) {
-          show('服务器繁忙，稍后再试');
+        if (res.status >= 500) {
+          show('服务器繁忙，请稍后重试');
         } else {
-          // 其他少见情况：提示但不回插，避免跳动
-          show('删除失败，请稍后重试');
+          // 4xx：未成功，不改变界面，只提示
+          show(reason ? `删除失败：${reason}` : '删除失败，请稍后重试');
         }
       }
     } catch {
-      // 网络异常：提示但不回插
       show('网络异常，删除失败');
     } finally {
       setDeleting(prev => { const s = new Set(prev); s.delete(fishId); return s; });
     }
   }
 
-  // —— 放回池塘：乐观更新 + 广播 pond:refresh（池塘与公告栏刷新） —— //
+  /** 放回池塘：等待后端成功后再从“我的收获”里移除，并广播 pond:refresh */
   async function releaseFish(fishId: string) {
     if (releasing.has(fishId)) return;
 
-    // 乐观从“我的收获”移除
-    setCatches(list => list.filter(c => c.fish_id !== fishId));
     setReleasing(prev => new Set(prev).add(fishId));
-
     try {
       const res = await fetch('/api/release', {
         method: 'POST',
@@ -133,26 +121,21 @@ export default function MyMineClient() {
       });
 
       if (res.ok) {
+        // 成功：从收获里移除
+        setCatches(list => list.filter(c => c.fish_id !== fishId));
         show('已放回池塘');
+        // 广播：让池塘与公告栏刷新
+        try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
       } else {
-        // 解析 reason
         let reason = '';
         try { const j = await res.json(); reason = j?.error || ''; } catch {}
-        // 幂等/已处理的返回：按成功处理，避免误报
-        if (res.status === 403 || res.status === 404 || res.status === 409) {
-          show('已放回池塘');
-        } else if (['not_your_catch', 'already_released', 'forbidden_or_not_in_pond', 'not_found'].includes(reason)) {
-          show('已放回池塘');
-        } else if (res.status >= 500) {
-          show('服务器繁忙，稍后再试');
+        if (res.status >= 500) {
+          show('服务器繁忙，请稍后重试');
         } else {
-          // 少见情况：提示但不把卡片加回，避免跳动
-          show('放回失败，请稍后重试');
+          // 4xx：未成功，不改变界面，只提示
+          show(reason ? `放回失败：${reason}` : '放回失败，请稍后重试');
         }
       }
-
-      // 广播：让池塘与公告栏刷新（“我的”页不再监听这个事件）
-      try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
     } catch {
       show('网络异常，放回失败');
     } finally {
@@ -251,7 +234,7 @@ export default function MyMineClient() {
                   actions={
                     f.in_pond ? (
                       <button className="ghost" onClick={() => deleteMyFish(f.id)} disabled={deleting.has(f.id)}>
-                        {deleting.has(f.id) ? '处理中…' : '🗑 删除'}
+                        {deleting.has(f.id) ? '删除中…' : '🗑 删除'}
                       </button>
                     ) : null
                   }
@@ -277,7 +260,7 @@ export default function MyMineClient() {
                   busy={releasing.has(c.fish_id)}
                   actions={
                     <button className="ghost" onClick={() => releaseFish(c.fish_id)} disabled={releasing.has(c.fish_id)}>
-                      {releasing.has(c.fish_id) ? '处理中…' : '🪣 放回池塘'}
+                      {releasing.has(c.fish_id) ? '放回中…' : '🪣 放回池塘'}
                     </button>
                   }
                 />
