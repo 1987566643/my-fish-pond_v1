@@ -118,21 +118,16 @@ export default function PondClient() {
     const json = await res.json();
     setPondFish(json.fish || []);
 
-    // 今日收获：从 /api/catch 取数据，按每天 4:00 起筛选
+    // 今日收获：直接读后端 today_catch
     try {
-      const mineCatch = await fetch('/api/catch', { cache: 'no-store' }).then((r) => r.json());
-      const list = (mineCatch.fish || []) as { created_at?: string }[];
-      const start = dayBoundary4AM();
-      let count = 0;
-      for (let i = 0; i < list.length; i++) {
-        const t = list[i] && (list[i] as any).created_at;
-        if (t && new Date(t) >= start) count++;
+      const data = await fetch('/api/catch', { cache: 'no-store' }).then(r => r.json());
+      if (typeof data.today_catch === 'number') {
+        setTodayCatchCount(data.today_catch);
       }
-      setTodayCatchCount(count);
     } catch {
-      setTodayCatchCount(0);
+      // 失败就不动，或 setTodayCatchCount(0)
     }
-  }
+
 
   useEffect(() => {
     refreshAll();
