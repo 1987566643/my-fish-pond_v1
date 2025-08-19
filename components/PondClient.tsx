@@ -95,7 +95,7 @@ export default function PondClient() {
   const [brush, setBrush] = useState(8);
   const [currentColor, setCurrentColor] = useState(palette[5]);
 
-  // 关键：用 ref 保持当前颜色/笔刷，避免闭包拿旧值
+  // 用 ref 保持当前颜色/笔刷，避免闭包拿旧值
   const colorRef = useRef(currentColor);
   const brushRef = useRef(brush);
   useEffect(() => { colorRef.current = currentColor; }, [currentColor]);
@@ -111,13 +111,20 @@ export default function PondClient() {
     caughtId: null as null | string,
   });
 
+  /** —— 本地移除某条鱼（用于 “我的” 页删除后无感同步） —— */
+  function removeSpriteById(id: string) {
+    spritesRef.current = (spritesRef.current || []).filter((s) => s.id !== id);
+    setPondFish((prev) => prev.filter((x) => x.id !== id));
+    setHovered((prev) => (prev && prev.id === id ? null : prev));
+  }
+
   /** 从后端刷新当前池塘鱼和“今日收获数” */
   async function refreshAll() {
     // —— 刷新池塘 —— //
     const res = await fetch('/api/fish', { cache: 'no-store' });
     const json = await res.json();
     setPondFish(json.fish || []);
-  
+
     // —— 刷新今日收获 —— //
     try {
       const mineCatch = await fetch('/api/catch', { cache: 'no-store' }).then((r) => r.json());
@@ -132,11 +139,29 @@ export default function PondClient() {
     }
   }
 
-
-
   useEffect(() => {
     refreshAll();
     initDrawCanvas();
+
+    /** —— 监听两个来自“我的”页的事件 —— */
+    const onRemove = (e: Event) => {
+      try {
+        const ce = e as CustomEvent<{ fishId: string }>;
+        const id = ce?.detail?.fishId;
+        if (id) removeSpriteById(id);
+      } catch {}
+    };
+
+    // 放回池塘后，广播 pond:refresh，让本页立刻 refreshAll
+    const onRefresh = () => { refreshAll(); };
+
+    window.addEventListener('pond:remove_fish', onRemove);
+    window.addEventListener('pond:refresh', onRefresh);
+
+    return () => {
+      window.removeEventListener('pond:remove_fish', onRemove);
+      window.removeEventListener('pond:refresh', onRefresh);
+    };
   }, []);
 
   /** ======== 画鱼面板：初始化本地画布绘制 ======== */
@@ -335,14 +360,12 @@ export default function PondClient() {
       const f = list[i];
       const existed = map.get(f.id);
       if (existed) {
-        // 保留位置/朝向/速度等动态状态，只更新信息和资源
         existed.name = f.name;
         existed.owner_name = f.owner_name;
         existed.likes = f.likes || 0;
         existed.dislikes = f.dislikes || 0;
         existed.created_at = f.created_at;
 
-        // 若图片或尺寸有变化，更新
         if (existed.data_url !== f.data_url) {
           existed.data_url = f.data_url;
           existed.img = new Image();
@@ -351,10 +374,8 @@ export default function PondClient() {
         existed.w = f.w;
         existed.h = f.h;
 
-        // 不动 existed.x / y / angle / speed / turn / caught
         next.push(existed);
       } else {
-        // 新鱼：随机入场，但只对新鱼随机
         const img = new Image();
         img.src = f.data_url;
         next.push({
@@ -377,10 +398,8 @@ export default function PondClient() {
         });
       }
     }
-    // 缺席的鱼（被钓走或下线）不加入 next，自然被移除
     spritesRef.current = next;
   }
-
 
   useEffect(() => {
     if (!pondRef.current) return;
@@ -586,7 +605,6 @@ export default function PondClient() {
     await refreshAll();
   }
 
-  
   // —— 全局无感刷新：当其他用户放鱼/钓鱼时，定时刷新（同时提供给公告栏一个全局事件） —— //
   useEffect(() => {
     const tick = () => {
@@ -604,48 +622,49 @@ export default function PondClient() {
       window.removeEventListener('focus', tick);
     };
   }, []);
-// —— 统计数量 —— //
+
+  // —— 统计数量 —— //
   const pondCount = pondFish.length;
 
   // —— 悬浮卡片：提前计算一个节点，避免 JSX 里写 IIFE —— //
   let hoverCard: ReactNode = null;
   if (hovered) {
-  const s = spritesRef.current.find((x) => x.id === hovered.id);
-  if (s) {
-    const ageMs = Date.now() - new Date(s.created_at).getTime();
-    const d = Math.floor(ageMs / 86400000);
-    const h = Math.floor(ageMs / 3600000) % 24;
-    const m = Math.floor(ageMs / 60000) % 60;
-    hoverCard = (
-      <div
-        onMouseEnter={() => setHoverLock(true)}
-        onMouseLeave={() => setHoverLock(false)}
-        style={{
-          position: 'fixed',
-          left: Math.round(hovered.x + 12),
-          top: Math.round(hovered.y + 12),
-          background: 'rgba(0,0,0,.86)',
-          color: '#fff',
-          padding: '8px 10px',
-          borderRadius: 8,
-          fontSize: 12,
-          pointerEvents: 'auto',
-          zIndex: 2000,                         // 只保留一次
-          boxShadow: '0 6px 18px rgba(0,0,0,.3)',
-          border: '1px solid rgba(255,255,255,.15)',
-        }}
-      >
-        <div>作者：{s.owner_name}</div>
-        <div>名字：{s.name}</div>
-        <div>已存活：{d}天{h}小时{m}分</div>
-        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-          <button className="ghost" onClick={async () => reactToFish(s.id, 1)}>👍 {s.likes}</button>
-          <button className="ghost" onClick={async () => reactToFish(s.id, -1)}>👎 {s.dislikes}</button>
+    const s = spritesRef.current.find((x) => x.id === hovered.id);
+    if (s) {
+      const ageMs = Date.now() - new Date(s.created_at).getTime();
+      const d = Math.floor(ageMs / 86400000);
+      const h = Math.floor(ageMs / 3600000) % 24;
+      const m = Math.floor(ageMs / 60000) % 60;
+      hoverCard = (
+        <div
+          onMouseEnter={() => setHoverLock(true)}
+          onMouseLeave={() => setHoverLock(false)}
+          style={{
+            position: 'fixed',
+            left: Math.round(hovered.x + 12),
+            top: Math.round(hovered.y + 12),
+            background: 'rgba(0,0,0,.86)',
+            color: '#fff',
+            padding: '8px 10px',
+            borderRadius: 8,
+            fontSize: 12,
+            pointerEvents: 'auto',
+            zIndex: 2000,
+            boxShadow: '0 6px 18px rgba(0,0,0,.3)',
+            border: '1px solid rgba(255,255,255,.15)',
+          }}
+        >
+          <div>作者：{s.owner_name}</div>
+          <div>名字：{s.name}</div>
+          <div>已存活：{d}天{h}小时{m}分</div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+            <button className="ghost" onClick={async () => reactToFish(s.id, 1)}>👍 {s.likes}</button>
+            <button className="ghost" onClick={async () => reactToFish(s.id, -1)}>👎 {s.dislikes}</button>
+          </div>
         </div>
-      </div>
-    );
+      );
+    }
   }
-}
 
   // —— 渲染 —— //
   return (
@@ -776,7 +795,7 @@ export default function PondClient() {
       {/* 悬浮信息卡（放在对话框外，避免层级干扰） */}
       {hoverCard}
 
-      {/* Toasts 放最外层，避免在 <dialog> 里解析异常 */}
+      {/* Toasts */}
       <div
         className="toast-container"
         style={{ position: 'fixed', right: 16, top: 16, display: 'grid', gap: 8, zIndex: 1000 }}
@@ -810,6 +829,7 @@ function dayBoundary4AM(): Date {
   }
   return boundary;
 }
+
 /** 处理 DPR 的高分屏适配（避免使用 ??） */
 function setupHiDPI(canvas: HTMLCanvasElement, w?: number, h?: number) {
   function resize() {
