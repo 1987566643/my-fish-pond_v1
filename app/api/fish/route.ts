@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { getSession } from '../../lib/auth';
-import { sql } from '../../lib/db';
+import { getSession } from '../../../lib/auth';
+import { sql } from '../../../lib/db';
 
 // GET: 池塘中的鱼
 export async function GET() {
