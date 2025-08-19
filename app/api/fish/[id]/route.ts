@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { getSession } from '../../../lib/auth';
-import { sql } from '../../../lib/db';
+import { getSession } from '../../../../lib/auth';
+import { sql } from '../../../../lib/db';
 
 type Params = { params: { id: string } };
 
