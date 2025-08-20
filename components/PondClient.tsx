@@ -45,23 +45,7 @@ type PondSprite = {
   turn: number;  // 何时转向的倒计时(秒)
   caught: boolean;
 };
-useEffect(() => {
-  let disposed = false;
-  let raf = 0 as number;
-  let timer: any = null;
 
-  const debouncedRefresh = () => {
-    if (timer) return;
-    timer = setTimeout(() => {
-      timer = null;
-      // 用 rAF 确保先渲染再打接口
-      raf = requestAnimationFrame(() => {
-        if (!disposed) refreshAll().then(() => {
-          try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
-        });
-      });
-    }, 120); // 120ms 抖动合并
-  };
 
   const es = new EventSource('/api/stream');
   es.addEventListener('pond', (_e) => {
@@ -133,7 +117,23 @@ export default function PondClient() {
   const brushRef = useRef(brush);
   useEffect(() => { colorRef.current = currentColor; }, [currentColor]);
   useEffect(() => { brushRef.current = brush; }, [brush]);
+  useEffect(() => {
+  let disposed = false;
+  let raf = 0 as number;
+  let timer: any = null;
 
+  const debouncedRefresh = () => {
+    if (timer) return;
+    timer = setTimeout(() => {
+      timer = null;
+      // 用 rAF 确保先渲染再打接口
+      raf = requestAnimationFrame(() => {
+        if (!disposed) refreshAll().then(() => {
+          try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
+        });
+      });
+    }, 120); // 120ms 抖动合并
+  };
   /** 钓鱼状态 */
   const [armed, setArmed] = useState(false);
   const fishingRef = useRef({
