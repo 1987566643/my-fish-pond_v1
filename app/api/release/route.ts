@@ -8,7 +8,7 @@ export async function POST(req: Request) {
   const { fishId } = await req.json();
 
   try {
-    // 只允许把“我最近一次钓到”的那条鱼放回
+    // 找到我“未放回”的那条收获
     const { rows: mine } = await sql/*sql*/`
       SELECT c.id AS catch_id, f.id AS fish_id, f.owner_id, f.name AS fish_name, u.username AS owner_username
       FROM catches c
@@ -21,7 +21,7 @@ export async function POST(req: Request) {
       LIMIT 1
     `;
 
-    // 幂等：不是我的/已经放回也算成功
+    // 幂等：不是我的/已放回 → 认为成功
     if (mine.length === 0) {
       return NextResponse.json({ ok: true });
     }
@@ -31,11 +31,12 @@ export async function POST(req: Request) {
     const fishName = mine[0].fish_name as string;
     const ownerUsername = mine[0].owner_username as string;
 
-    // 1) 标记该收获已放回
-    await sql/*sql*/`
+    // 1) 把该收获标记为已放回（只更新一次）
+    const { rows: updCatch } = await sql/*sql*/`
       UPDATE catches
       SET released = TRUE, released_at = now()
-      WHERE id = ${catchId}
+      WHERE id = ${catchId} AND released = FALSE
+      RETURNING id
     `;
 
     // 2) 鱼回到池塘
@@ -43,7 +44,17 @@ export async function POST(req: Request) {
       UPDATE fish SET in_pond = TRUE WHERE id = ${fishId}
     `;
 
-    // 3) 公告：写 RELEASE 快照
+    // 只有真正从 false→true 才 −1
+    if (updCatch.length > 0) {
+      await sql/*sql*/`
+        UPDATE users
+        SET today_catch = GREATEST(today_catch - 1, 0),
+            total_catch = GREATEST(total_catch - 1, 0)
+        WHERE id = ${session.id}
+      `;
+    }
+
+    // 公告快照（RELEASE）
     await sql/*sql*/`
       INSERT INTO pond_events (
         type, actor_id, target_fish_id, target_owner_id,
@@ -58,7 +69,7 @@ export async function POST(req: Request) {
     `;
 
     return NextResponse.json({ ok: true });
-  } catch (e) {
+  } catch {
     return NextResponse.json({ error: 'server' }, { status: 500 });
   }
 }
