@@ -255,7 +255,7 @@ export default function MyMineClient() {
         <h2 style={{ fontSize: 16, margin: 0 }}>我的收获（{catches.length}）</h2>
         {initialLoading && <div className="muted">加载中…</div>}
         {!initialLoading && catches.length === 0 && <div className="muted">暂无</div>}
-        {!初始加载 && (
+        {!initialLoading && (
           <Grid>
             {catches.map(c => (
               <Tile
