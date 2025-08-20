@@ -26,7 +26,6 @@ export async function GET() {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  // 我画的鱼（判断是否已被钓走）
   const myDrawn = await sql<MyDrawnRow[]>/*sql*/`
     SELECT
       f.id,
@@ -40,7 +39,6 @@ export async function GET() {
     ORDER BY f.created_at DESC
   `;
 
-  // 我的收获
   const myCatch = await sql<MyCatchRow[]>/*sql*/`
     SELECT
       c.id       AS catch_id,
@@ -56,4 +54,3 @@ export async function GET() {
 
   return NextResponse.json({ myDrawn, myCatch }, { status: 200 });
 }
-
