@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { sql } from '../../../../../../lib/db';
-import { getSessionUserId } from '../../../../../../lib/auth';
+import { sql } from '../../../../../lib/db';
+import { getSessionUserId } from '../../../../../lib/auth';
 
 export async function DELETE(_: Request, { params }: { params: { id: string } }) {
   const userId = await getSessionUserId();
@@ -50,3 +50,4 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
 
   return NextResponse.json({ ok: true }, { status: 200 });
 }
+
