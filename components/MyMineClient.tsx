@@ -10,15 +10,15 @@ type MyFish = {
   h: number;
   in_pond: boolean;
   created_at?: string | null;
-  angler_username?: string | null;
-  caught_at?: string | null;
+  angler_username?: string | null;   // 最近一次钓走者
+  caught_at?: string | null;         // 最近一次被钓走时间
 };
 
 type MyCatch = {
   catch_id: string;
   fish_id: string;
   name: string;
-  owner_username?: string | null;
+  owner_username?: string | null;    // 原作者
   data_url: string;
   w: number;
   h: number;
@@ -30,11 +30,11 @@ export default function MyMineClient() {
   const [catches, setCatches] = useState<MyCatch[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
 
-  // 仅用于禁用按钮（不做任何提示）
+  // 仅用于禁用按钮（不弹提示）
   const [pendingDelete, setPendingDelete] = useState<Set<string>>(new Set());   // fishId
   const [pendingRelease, setPendingRelease] = useState<Set<string>>(new Set()); // fishId
 
-  // 首屏加载一次；之后不再整页刷新，由本地状态维护
+  // —— 首屏加载一次 —— //
   useEffect(() => {
     (async () => {
       try {
@@ -50,24 +50,85 @@ export default function MyMineClient() {
     })();
   }, []);
 
-  /** 删除我的鱼：乐观移除；不广播；不整页刷新；失败也不回滚（后端幂等处理即可） */
+  // —— 轻量合并：仅更新“我画的鱼”的状态字段；不重排，不闪烁 —— //
+  async function softMergeMine() {
+    // 页面不可见时跳过，减少无意义请求
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+
+    try {
+      const a = await fetch('/api/mine', { cache: 'no-store' }).then(r => r.json()).catch(() => null);
+      if (!a?.fish) return;
+
+      const incoming: Record<string, MyFish> = Object.create(null);
+      (a.fish as MyFish[]).forEach(f => { incoming[f.id] = f; });
+
+      setMine(cur =>
+        cur.map(old => {
+          const newer = incoming[old.id];
+          return newer
+            ? {
+                ...old,
+                // 只覆盖状态相关 + 允许名称/图同步（如果作者改了）
+                in_pond: newer.in_pond,
+                angler_username: newer.angler_username,
+                caught_at: newer.caught_at,
+                name: newer.name ?? old.name,
+                data_url: newer.data_url ?? old.data_url,
+              }
+            : old;
+        })
+      );
+    } catch {
+      // 静默
+    }
+  }
+
+  // —— 订阅 SSE：别人放回/钓走/删除/放鱼 → 轻量合并“我画的鱼” —— //
+  useEffect(() => {
+    const es = new EventSource('/api/stream');
+    let timer: any = null;
+
+    const onPond = () => {
+      if (timer) return;
+      // 120ms 防抖合并
+      timer = setTimeout(() => {
+        timer = null;
+        softMergeMine();
+      }, 120);
+    };
+
+    es.addEventListener('pond', onPond);
+    es.onerror = () => { /* 自动重连，忽略 */ };
+
+    const onVis = () => {
+      if (document.visibilityState === 'visible') softMergeMine();
+    };
+    document.addEventListener('visibilitychange', onVis);
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVis);
+      es.close();
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** 删除我的鱼：纯乐观移除；不广播；失败不回滚（后端幂等） */
   function deleteMyFish(fishId: string) {
     if (pendingDelete.has(fishId)) return;
     const t = mine.find(f => f.id === fishId);
     if (!t || !t.in_pond) return;
 
-    // 乐观：立即本地移除
+    // 本地立即移除
     setMine(prev => prev.filter(f => f.id !== fishId));
 
-    // 禁用按钮，异步执行
+    // 异步请求（建议后端：不存在/已不在池塘也返回 200）
     setPendingDelete(s => new Set(s).add(fishId));
     requestAnimationFrame(() => {
       (async () => {
         try {
           await fetch(`/api/fish/${fishId}`, { method: 'DELETE' });
-          // 不提示、不回滚；由后端保证幂等成功（不存在/已被钓走也返回 200）
         } catch {
-          // 静默
+          // 静默；后续 SSE/软合并会矫正
         } finally {
           setPendingDelete(s => { const n = new Set(s); n.delete(fishId); return n; });
         }
@@ -75,11 +136,11 @@ export default function MyMineClient() {
     });
   }
 
-  /** 放回池塘：乐观从“我的收获”移除；仅在成功后广播 pond:refresh；不整页刷新 */
+  /** 放回池塘：本地从“我的收获”移除；仅成功后广播 pond:refresh（池塘/公告会自己更新） */
   function releaseFish(fishId: string) {
     if (pendingRelease.has(fishId)) return;
 
-    // 乐观：本地从“我的收获”移除
+    // 本地立即移除
     setCatches(prev => prev.filter(c => c.fish_id !== fishId));
 
     setPendingRelease(s => new Set(s).add(fishId));
@@ -92,12 +153,11 @@ export default function MyMineClient() {
             body: JSON.stringify({ fishId }),
           });
           if (res.ok) {
-            // 只有真正成功后才广播，让池塘/公告自行同步；本页不刷新列表
+            // 成功后广播一次，让池塘/公告栏同步；本页不再刷新两个列表
             try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
           }
-          // 非 200 也不回滚，交给后续 SSE/轮询（如果你启用了）去校正
         } catch {
-          // 静默
+          // 静默；后续 SSE/轮询兜底
         } finally {
           setPendingRelease(s => { const n = new Set(s); n.delete(fishId); return n; });
         }
@@ -105,7 +165,7 @@ export default function MyMineClient() {
     });
   }
 
-  /** 统一卡片（固定高度、按钮底部对齐） */
+  // —— 统一卡片（固定高度、按钮底部对齐） —— //
   const TILE_HEIGHT = 280;
   const PREVIEW_HEIGHT = 130;
 
