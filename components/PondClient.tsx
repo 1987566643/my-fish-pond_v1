@@ -45,7 +45,40 @@ type PondSprite = {
   turn: number;  // 何时转向的倒计时(秒)
   caught: boolean;
 };
+useEffect(() => {
+  let disposed = false;
+  let raf = 0 as number;
+  let timer: any = null;
 
+  const debouncedRefresh = () => {
+    if (timer) return;
+    timer = setTimeout(() => {
+      timer = null;
+      // 用 rAF 确保先渲染再打接口
+      raf = requestAnimationFrame(() => {
+        if (!disposed) refreshAll().then(() => {
+          try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
+        });
+      });
+    }, 120); // 120ms 抖动合并
+  };
+
+  const es = new EventSource('/api/stream');
+  es.addEventListener('pond', (_e) => {
+    // 这里不解析细节，收到任何池塘相关事件就 refresh
+    debouncedRefresh();
+  });
+  es.onerror = () => {
+    // 交给浏览器自动重连；不做额外处理
+  };
+
+  return () => {
+    disposed = true;
+    if (raf) cancelAnimationFrame(raf);
+    if (timer) clearTimeout(timer);
+    es.close();
+  };
+}, []);
 function rnd(min: number, max: number) {
   return Math.random() * (max - min) + min;
 }
