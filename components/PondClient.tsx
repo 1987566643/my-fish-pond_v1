@@ -45,7 +45,10 @@ type PondSprite = {
   turn: number;  // 何时转向的倒计时(秒)
   caught: boolean;
 };
-
+/** —— 柔和背景：持久气泡 —— */
+type Bubble = {
+  x: number; y: number; r: number; vy: number; alpha: number; phase: number;
+};
 function rnd(min: number, max: number) {
   return Math.random() * (max - min) + min;
 }
@@ -315,7 +318,59 @@ export default function PondClient() {
 
   /** ======== 池塘渲染 ======== */
   const spritesRef = useRef<PondSprite[]>([]);
+  /** 背景气泡（持久，不会闪） */
+  const bubblesRef = useRef<Bubble[]>([]);
+
   const lastTs = useRef(performance.now());
+  /** 柔和水面：渐变 + 低频波纹 + 持久气泡 */
+  function drawWater(ctx: CanvasRenderingContext2D, W: number, H: number, ts: number) {
+    // 背景渐变：顶部略深，底部略亮
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#0c1e2e');
+    g.addColorStop(1, '#0a1825');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  
+    // 低频波纹（非随机）：若隐若现的几条大波
+    ctx.save();
+    ctx.globalAlpha = 0.06;
+    ctx.lineWidth = 18;
+    ctx.strokeStyle = '#cfeaff';
+    const t = ts * 0.001; // 秒
+    for (let i = 0; i < 5; i++) {
+      const baseY = (H * (i + 1)) / 6;
+      const amp = 12 + i * 3;               // 振幅
+      const freq = 0.8 + i * 0.15;          // 频率
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 24) {
+        const y = baseY + Math.sin((x * 0.015) + t * freq + i * 1.7) * amp;
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  
+    // 持久气泡层（不会闪）：少量气泡缓慢上浮
+    ctx.save();
+    ctx.globalAlpha = 0.12;
+    for (let i = 0; i < bubblesRef.current.length; i++) {
+      const b = bubblesRef.current[i];
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(205,234,255,0.9)';
+      ctx.fill();
+      // 漫反射高光
+      ctx.beginPath();
+      ctx.arc(b.x - b.r * 0.35, b.y - b.r * 0.35, b.r * 0.35, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.fill();
+  
+      // 轻微水平摆动（非随机、由时间驱动）
+      b.x += Math.sin(t * 0.9 + b.phase) * 0.06;
+    }
+    ctx.restore();
+  }
 
   /** 按 id 增量合并：老鱼保持位置/朝向，新鱼才随机入场 */
   function rebuildSprites(list: ServerFish[]) {
@@ -389,9 +444,23 @@ export default function PondClient() {
   useEffect(() => {
     const cvs = pondRef.current!;
     if (!cvs) return;
-
+    
     setupHiDPI(cvs); // 池塘画布跟随容器大小
     const ctx = cvs.getContext('2d')!;
+    // 初始化持久气泡（只执行一次）
+    if (bubblesRef.current.length === 0) {
+      const N = Math.max(10, Math.floor((cvs.clientWidth * cvs.clientHeight) / 45000)); // 随容器大小调整数量
+      for (let i = 0; i < N; i++) {
+        bubblesRef.current.push({
+          x: Math.random() * cvs.clientWidth,
+          y: Math.random() * cvs.clientHeight,
+          r: 3 + Math.random() * 6,
+          vy: 12 + Math.random() * 16,       // 上浮速度（px/s）
+          alpha: 0.12 + Math.random() * 0.1, // 预留参数（目前没用到）
+          phase: Math.random() * Math.PI * 2,
+        });
+      }
+    }
     let rafId = 0 as number;
 
     /** 画鱼钩+检测命中 */
@@ -448,13 +517,23 @@ export default function PondClient() {
       ctx.clearRect(0, 0, W, H);
 
       // 背景气泡
-      for (let i = 0; i < 6; i++) {
-        ctx.globalAlpha = 0.08;
-        ctx.beginPath();
-        ctx.arc(rnd(0, W), rnd(0, H), rnd(10, 60), 0, Math.PI * 2);
-        ctx.fillStyle = '#9dd0ff';
-        ctx.fill();
-        ctx.globalAlpha = 1;
+      // 柔和水面（不闪）
+      drawWater(ctx, W, H, ts);
+      
+      // 更新持久气泡（缓慢上浮 & 回到底部）
+      {
+        const dt = Math.min(0.033, (ts - lastTs.current) / 1000); // 你已有 lastTs，这里可复用
+        for (let i = 0; i < bubblesRef.current.length; i++) {
+          const b = bubblesRef.current[i];
+          b.y -= b.vy * dt;
+          if (b.y + b.r < -10) {
+            b.y = H + 20 + Math.random() * 40;   // 回到底部
+            b.x = Math.random() * W;
+            b.r = 3 + Math.random() * 6;
+            b.vy = 12 + Math.random() * 16;
+            b.phase = Math.random() * Math.PI * 2;
+          }
+        }
       }
 
       // 鱼游动+绘制
