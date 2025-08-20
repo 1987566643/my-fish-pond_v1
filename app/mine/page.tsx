@@ -4,19 +4,19 @@ import useSWR from 'swr';
 import { useEffect } from 'react';
 
 type MyDrawn = {
-  id: string;            // UUID
+  id: string;
   name: string;
   data_url: string;
   in_pond: boolean;
-  caught: boolean;       // 是否已被钓走（由 LEFT JOIN 判断）
+  caught: boolean;
 };
 
 type MyCatch = {
-  catch_id: string;      // UUID
-  fish_id: string;       // UUID
+  catch_id: string;
+  fish_id: string;
   name: string;
   data_url: string;
-  owner_id: string;      // UUID
+  owner_id: string;
 };
 
 const fetcher = (url: string) => fetch(url).then(r => r.json());
@@ -28,7 +28,6 @@ export default function MinePage() {
     { revalidateOnFocus: true }
   );
 
-  // 监听全局事件以与池塘/公告栏联动
   useEffect(() => {
     const onRefresh = () => mutate();
     window.addEventListener('pond:refresh', onRefresh as any);
@@ -43,7 +42,6 @@ export default function MinePage() {
     return <div className="p-4 text-sm opacity-70">加载中…</div>;
   }
 
-  // 删除“我画的鱼”（仅允许在池塘且未被钓走）
   async function handleDeleteFish(fishId: string) {
     const prev = data;
     const next = { ...data, myDrawn: data.myDrawn.filter(f => f.id !== fishId) };
@@ -61,7 +59,6 @@ export default function MinePage() {
     mutate();
   }
 
-  // 放回“我的收获”
   async function handleReturnCatch(catchId: string) {
     const prev = data;
     const next = { ...data, myCatch: data.myCatch.filter(c => c.catch_id !== catchId) };
