@@ -131,7 +131,7 @@ export default function PondClient() {
       setTodayCatchCount(0);
     }
 
-
+  }
 
   useEffect(() => {
     refreshAll();
