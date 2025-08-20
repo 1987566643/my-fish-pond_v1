@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { sql } from '../../../../lib/db'; // 根据项目路径调整
+import { sql } from '../../../../lib/db';
 
 const TOKEN = process.env.CRON_SECRET || '';
 
@@ -13,7 +13,11 @@ function bad(msg = 'forbidden') {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const token = url.searchParams.get('token') || '';
-  if (!TOKEN || token !== TOKEN) return bad();
+  const isVercelCron = req.headers.get('x-vercel-cron') !== null;
+
+  if (!isVercelCron) {
+    if (!TOKEN || token !== TOKEN) return bad();
+  }
 
   try {
     await sql/*sql*/`
