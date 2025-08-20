@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { sql } from '../../../../../../lib/db';
-import { getSessionUserId } from '../../../../../../lib/auth';
+import { sql } from '../../../../../lib/db';
+import { getSessionUserId } from '../../../../../lib/auth';
 
 export async function POST(req: Request) {
   const userId = await getSessionUserId();
@@ -63,3 +63,4 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ ok: true }, { status: 200 });
 }
+
