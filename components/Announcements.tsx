@@ -13,9 +13,16 @@ export default function Announcements(){
       <ul style={{listStyle:'none', padding:0, margin:0, display:'grid', gap:8}}>
         {items.map((ev:any, i:number)=>(
           <li key={i} className="muted">
-            {ev.type==='ADD' ? '📢' : '🎣'}{' '}
-            <strong>{ev.actor_name}</strong>{' '}
-            {ev.type==='ADD' ? <>放入了「{ev.fish_name}」</> : <>钓走了 <strong>{ev.target_owner_name}</strong> 的「{ev.fish_name}」</>}
+            {ev.type==='ADD' ? '📢'
+             : ev.type==='CATCH' ? '🎣'
+             : ev.type==='RELEASE' ? '🪣'
+             : ev.type==='DELETE' ? '🗑️' : '📌'}{' '}
+            
+            <strong>{ev.actor_name || ev.actor_username}</strong>{' '}
+            {ev.type==='ADD' && <>放入了「{ev.fish_name}」</>}
+            {ev.type==='CATCH' && <>钓走了 <strong>{ev.target_owner_name || ev.owner_username}</strong> 的「{ev.fish_name}」</>}
+            {ev.type==='RELEASE' && <>放回了「{ev.fish_name}」</>}
+            {ev.type==='DELETE' && <>删除了「{ev.fish_name}」</>}
             <div style={{fontSize:12, opacity:.7}}>{new Date(ev.created_at).toLocaleString()}</div>
           </li>
         ))}
