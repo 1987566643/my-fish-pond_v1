@@ -26,7 +26,8 @@ export async function GET() {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  const myDrawn = await sql<MyDrawnRow[]>/*sql*/`
+  // 我画的鱼
+  const myDrawnRes = await sql<MyDrawnRow[]>/*sql*/`
     SELECT
       f.id,
       f.name,
@@ -38,8 +39,10 @@ export async function GET() {
     WHERE f.owner_id = ${userId}
     ORDER BY f.created_at DESC
   `;
+  const myDrawn = myDrawnRes.rows;
 
-  const myCatch = await sql<MyCatchRow[]>/*sql*/`
+  // 我的收获
+  const myCatchRes = await sql<MyCatchRow[]>/*sql*/`
     SELECT
       c.id       AS catch_id,
       f.id       AS fish_id,
@@ -51,6 +54,7 @@ export async function GET() {
     WHERE c.angler_id = ${userId}
     ORDER BY c.created_at DESC
   `;
+  const myCatch = myCatchRes.rows;
 
   return NextResponse.json({ myDrawn, myCatch }, { status: 200 });
 }
