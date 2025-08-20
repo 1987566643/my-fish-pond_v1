@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { sql } from '../../../../../lib/db';
-import { getSessionUserId } from '../../../../../lib/auth';
+import { sql } from '../../../../lib/db';
+import { getSessionUserId } from '../../../../lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,3 +56,4 @@ export async function GET() {
 
   return NextResponse.json({ myDrawn, myCatch }, { status: 200 });
 }
+
