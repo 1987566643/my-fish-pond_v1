@@ -87,6 +87,21 @@ export default function PondClient() {
   /** 悬浮的提示框定位（在池塘画布内的坐标） */
   const [hovered, setHovered] = useState<{ id: string; x: number; y: number } | null>(null);
   const [hoverLock, setHoverLock] = useState(false);
+  const hideHoverTimerRef = useRef<number | null>(null);
+
+  function scheduleHideHover(ms = 180) {
+    if (hideHoverTimerRef.current) window.clearTimeout(hideHoverTimerRef.current);
+    hideHoverTimerRef.current = window.setTimeout(() => {
+      if (!hoverLock) setHovered(null);
+      hideHoverTimerRef.current = null;
+    }, ms);
+  }
+  function cancelHideHover() {
+    if (hideHoverTimerRef.current) {
+      window.clearTimeout(hideHoverTimerRef.current);
+      hideHoverTimerRef.current = null;
+    }
+  }
 
   /** 池塘数据 */
   const pondRef = useRef<HTMLCanvasElement>(null);
@@ -100,7 +115,7 @@ export default function PondClient() {
   const [brush, setBrush] = useState(8);
   const [currentColor, setCurrentColor] = useState(palette[5]);
 
-  // 用 ref 保持当前颜色/笔刷，避免闭包拿旧值
+  // 关键：用 ref 保持当前颜色/笔刷，避免闭包拿旧值
   const colorRef = useRef(currentColor);
   const brushRef = useRef(brush);
   useEffect(() => { colorRef.current = currentColor; }, [currentColor]);
@@ -118,16 +133,17 @@ export default function PondClient() {
 
   /** 从后端刷新当前池塘鱼和“今日收获数” */
   async function refreshAll() {
-    // —— 池塘 —— //
+    // —— 刷新池塘 —— //
     const res = await fetch('/api/fish', { cache: 'no-store' });
     const json = await res.json();
     setPondFish(json.fish || []);
 
-    // —— 今日收获：后端计数为准 —— //
+    // —— 刷新今日收获（后端计数为准） —— //
     try {
       const j = await fetch('/api/catch', { cache: 'no-store' }).then(r => r.json());
       if (j && j.ok) {
         setTodayCatchCount(j.today_catch ?? 0);
+        // 如需显示总收获也可： setTotalCatch(j.total_catch);
       } else {
         setTodayCatchCount(0);
       }
@@ -320,6 +336,7 @@ export default function PondClient() {
   const spritesRef = useRef<PondSprite[]>([]);
   /** 背景气泡（持久，不会闪） */
   const bubblesRef = useRef<Bubble[]>([]);
+
   const lastTs = useRef(performance.now());
 
   /** 柔和水面：渐变 + 低频波纹 + 持久气泡 */
@@ -351,7 +368,7 @@ export default function PondClient() {
     }
     ctx.restore();
 
-    // 持久气泡（不会闪）：少量气泡缓慢上浮
+    // 持久气泡层（不会闪）：少量气泡缓慢上浮
     ctx.save();
     ctx.globalAlpha = 0.12;
     for (let i = 0; i < bubblesRef.current.length; i++) {
@@ -360,7 +377,7 @@ export default function PondClient() {
       ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(205,234,255,0.9)';
       ctx.fill();
-      // 高光
+      // 漫反射高光
       ctx.beginPath();
       ctx.arc(b.x - b.r * 0.35, b.y - b.r * 0.35, b.r * 0.35, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(255,255,255,0.6)';
@@ -389,12 +406,14 @@ export default function PondClient() {
       const f = list[i];
       const existed = map.get(f.id);
       if (existed) {
+        // 保留位置/朝向/速度等动态状态，只更新信息和资源
         existed.name = f.name;
         existed.owner_name = f.owner_name;
         existed.likes = f.likes || 0;
         existed.dislikes = f.dislikes || 0;
         existed.created_at = f.created_at;
 
+        // 若图片或尺寸有变化，更新
         if (existed.data_url !== f.data_url) {
           existed.data_url = f.data_url;
           existed.img = new Image();
@@ -403,8 +422,10 @@ export default function PondClient() {
         existed.w = f.w;
         existed.h = f.h;
 
+        // 不动 existed.x / y / angle / speed / turn / caught
         next.push(existed);
       } else {
+        // 新鱼：随机入场，但只对新鱼随机
         const img = new Image();
         img.src = f.data_url;
         next.push({
@@ -442,22 +463,20 @@ export default function PondClient() {
 
     setupHiDPI(cvs); // 池塘画布跟随容器大小
     const ctx = cvs.getContext('2d')!;
-
     // 初始化持久气泡（只执行一次）
     if (bubblesRef.current.length === 0) {
-      const N = Math.max(10, Math.floor((cvs.clientWidth * cvs.clientHeight) / 45000));
+      const N = Math.max(10, Math.floor((cvs.clientWidth * cvs.clientHeight) / 45000)); // 随容器大小调整数量
       for (let i = 0; i < N; i++) {
         bubblesRef.current.push({
           x: Math.random() * cvs.clientWidth,
           y: Math.random() * cvs.clientHeight,
           r: 3 + Math.random() * 6,
           vy: 12 + Math.random() * 16,       // 上浮速度（px/s）
-          alpha: 0.12 + Math.random() * 0.1,
+          alpha: 0.12 + Math.random() * 0.1, // 预留参数（目前没用到）
           phase: Math.random() * Math.PI * 2,
         });
       }
     }
-
     let rafId = 0 as number;
 
     /** 画鱼钩+检测命中 */
@@ -511,21 +530,24 @@ export default function PondClient() {
 
       const W = cvs.clientWidth;
       const H = cvs.clientHeight;
-
-      // 背景（柔和水面，不闪）
       ctx.clearRect(0, 0, W, H);
+
+      // 柔和水面（不闪）
       drawWater(ctx, W, H, ts);
 
-      // 更新持久气泡（缓慢上浮 & 回到底部） —— 注意：复用上面的 dt，不要再次计算
-      for (let i = 0; i < bubblesRef.current.length; i++) {
-        const b = bubblesRef.current[i];
-        b.y -= b.vy * dt;
-        if (b.y + b.r < -10) {
-          b.y = H + 20 + Math.random() * 40;   // 回到底部
-          b.x = Math.random() * W;
-          b.r = 3 + Math.random() * 6;
-          b.vy = 12 + Math.random() * 16;
-          b.phase = Math.random() * Math.PI * 2;
+      // 更新持久气泡（缓慢上浮 & 回到底部）
+      {
+        const dtu = Math.min(0.033, (ts - lastTs.current) / 1000);
+        for (let i = 0; i < bubblesRef.current.length; i++) {
+          const b = bubblesRef.current[i];
+          b.y -= b.vy * dtu;
+          if (b.y + b.r < -10) {
+            b.y = H + 20 + Math.random() * 40;   // 回到底部
+            b.x = Math.random() * W;
+            b.r = 3 + Math.random() * 6;
+            b.vy = 12 + Math.random() * 16;
+            b.phase = Math.random() * Math.PI * 2;
+          }
         }
       }
 
@@ -562,46 +584,54 @@ export default function PondClient() {
 
     rafId = requestAnimationFrame(frame);
 
-    // 悬浮检测（计算是否在某鱼的包围盒内）
+    // 悬浮检测（计算是否在某鱼的包围盒内）——加入缓冲 & 延迟隐藏
     function onMove(ev: PointerEvent) {
       if (hoverLock) return;
       const rect = cvs.getBoundingClientRect();
       const x = ev.clientX - rect.left;
       const y = ev.clientY - rect.top;
+
+      const PAD = 10; // 命中缓冲像素
       let found: null | { id: string; x: number; y: number } = null;
+
       for (let i = 0; i < spritesRef.current.length; i++) {
         const s = spritesRef.current[i];
         const k = sizeFactor(s.created_at);
         const bw = s.w * k;
         const bh = s.h * k;
-        if (x > s.x - bw / 2 && x < s.x + bw / 2 && y > s.y - bh / 2 && y < s.y + bh / 2) {
+        if (
+          x > s.x - bw / 2 - PAD && x < s.x + bw / 2 + PAD &&
+          y > s.y - bh / 2 - PAD && y < s.y + bh / 2 + PAD
+        ) {
           found = { id: s.id, x, y };
           break;
         }
       }
-      setHovered(found);
+
+      if (found) {
+        cancelHideHover();
+        setHovered(found);
+      } else {
+        scheduleHideHover(180);
+      }
     }
 
-    const onResize = () => {
-      setupHiDPI(cvs);
-      const W = cvs.clientWidth, H = cvs.clientHeight;
-      // 让越界气泡回到画布内
-      for (let i = 0; i < bubblesRef.current.length; i++) {
-        const b = bubblesRef.current[i];
-        if (b.x < -20 || b.x > W + 20) b.x = Math.random() * W;
-        if (b.y < -20 || b.y > H + 20) b.y = Math.random() * H;
-      }
-    };
+    function onLeave() {
+      if (!hoverLock) scheduleHideHover(160);
+    }
 
+    const onResize = () => setupHiDPI(cvs);
     window.addEventListener('resize', onResize);
     cvs.addEventListener('pointermove', onMove);
+    cvs.addEventListener('pointerleave', onLeave);
 
     return () => {
       cancelAnimationFrame(rafId);
       window.removeEventListener('resize', onResize);
       cvs.removeEventListener('pointermove', onMove);
+      cvs.removeEventListener('pointerleave', onLeave);
     };
-  }, []);
+  }, [hoverLock]); // hoverLock 变化时，确保监听逻辑一致
 
   /** 放下鱼钩 */
   function armToggle() {
@@ -688,7 +718,7 @@ export default function PondClient() {
   // —— 统计数量 —— //
   const pondCount = pondFish.length;
 
-  // —— 悬浮卡片：提前计算一个节点，避免 JSX 里写 IIFE —— //
+  // —— 悬浮卡片：提前计算一个节点（加入锁定与延迟逻辑） —— //
   let hoverCard: ReactNode = null;
   if (hovered) {
     const s = spritesRef.current.find((x) => x.id === hovered.id);
@@ -699,8 +729,8 @@ export default function PondClient() {
       const m = Math.floor(ageMs / 60000) % 60;
       hoverCard = (
         <div
-          onMouseEnter={() => setHoverLock(true)}
-          onMouseLeave={() => setHoverLock(false)}
+          onMouseEnter={() => { setHoverLock(true); cancelHideHover(); }}
+          onMouseLeave={() => { setHoverLock(false); scheduleHideHover(160); }}
           style={{
             position: 'fixed',
             left: Math.round(hovered.x + 12),
@@ -857,7 +887,7 @@ export default function PondClient() {
       {/* 悬浮信息卡（放在对话框外，避免层级干扰） */}
       {hoverCard}
 
-      {/* Toasts */}
+      {/* Toasts 放最外层，避免在 <dialog> 里解析异常 */}
       <div
         className="toast-container"
         style={{ position: 'fixed', right: 16, top: 16, display: 'grid', gap: 8, zIndex: 1000 }}
@@ -882,7 +912,7 @@ export default function PondClient() {
   );
 }
 
-/** 本地时间每天 4:00 为边界：若当前时间早于 4 点，则用昨日 4 点 */
+/** 本地时间每天 4:00 为边界：若当前时间早于 4 点，则用昨日 4 点（当前未使用，保留以备后续） */
 function dayBoundary4AM(): Date {
   const now = new Date();
   const boundary = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 4, 0, 0, 0);
