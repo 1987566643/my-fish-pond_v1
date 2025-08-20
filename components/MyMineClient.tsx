@@ -24,6 +24,30 @@ type MyCatch = {
   h: number;
   caught_at?: string | null;
 };
+useEffect(() => {
+  const es = new EventSource('/api/stream');
+  es.addEventListener('pond', () => {
+    // 触发一次轻量合并（你前面已经写过 softMerge interval；这里直接复用 load+merge 或只 GET /api/mine）
+    (async () => {
+      try {
+        const a = await fetch('/api/mine', { cache: 'no-store' }).then(r => r.json()).catch(() => null);
+        if (a?.fish) {
+          const incoming: Record<string, MyFish> = Object.create(null);
+          (a.fish as MyFish[]).forEach(f => { incoming[f.id] = f; });
+          setMine(cur => cur.map(old => incoming[old.id] ? { ...old,
+            in_pond: incoming[old.id].in_pond,
+            angler_username: incoming[old.id].angler_username,
+            caught_at: incoming[old.id].caught_at,
+            name: incoming[old.id].name ?? old.name,
+            data_url: incoming[old.id].data_url ?? old.data_url,
+          } : old));
+        }
+      } catch {}
+    })();
+  });
+  es.onerror = () => {};
+  return () => es.close();
+}, []);
 
 export default function MyMineClient() {
   const [mine, setMine] = useState<MyFish[]>([]);
