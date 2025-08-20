@@ -1,5 +1,5 @@
 // app/api/stream/route.ts
-import { sql } from '../../lib/db';
+import { sql } from '../../../lib/db';
 
 // 不参与预渲染 & 不缓存
 export const dynamic = 'force-dynamic';
@@ -75,4 +75,5 @@ export async function GET() {
       'X-Accel-Buffering': 'no',
     },
   });
+
 }
