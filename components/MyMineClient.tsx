@@ -10,147 +10,102 @@ type MyFish = {
   h: number;
   in_pond: boolean;
   created_at?: string | null;
-  angler_username?: string | null;   // 最近一次钓走者
-  caught_at?: string | null;         // 最近一次被钓走时间
+  angler_username?: string | null;
+  caught_at?: string | null;
 };
 
 type MyCatch = {
   catch_id: string;
   fish_id: string;
   name: string;
-  owner_username?: string | null;    // 鱼原主人
+  owner_username?: string | null;
   data_url: string;
   w: number;
   h: number;
   caught_at?: string | null;
 };
 
-/** 轻量 Toast */
-function useToast() {
-  const [msg, setMsg] = useState<string | null>(null);
-  useEffect(() => {
-    if (!msg) return;
-    const t = setTimeout(() => setMsg(null), 1600);
-    return () => clearTimeout(t);
-  }, [msg]);
-  const Toast = msg ? (
-    <div
-      style={{
-        position: 'fixed', right: 16, top: 16, zIndex: 5000,
-        background: 'rgba(0,0,0,.82)', color: '#fff',
-        padding: '10px 14px', borderRadius: 10, boxShadow: '0 8px 22px rgba(0,0,0,.35)', fontSize: 14,
-      }}
-    >
-      {msg}
-    </div>
-  ) : null;
-  return { Toast, show: (m: string) => setMsg(m) };
-}
-
 export default function MyMineClient() {
   const [mine, setMine] = useState<MyFish[]>([]);
   const [catches, setCatches] = useState<MyCatch[]>([]);
-  const [loading, setLoading] = useState(true);
-  const { Toast, show } = useToast();
+  const [initialLoading, setInitialLoading] = useState(true);
 
-  // 进行中集合，避免重复提交
-  const [releasing, setReleasing] = useState<Set<string>>(new Set());
-  const [deleting, setDeleting] = useState<Set<string>>(new Set());
+  // 仅用于禁用按钮（不做任何提示）
+  const [pendingDelete, setPendingDelete] = useState<Set<string>>(new Set());   // fishId
+  const [pendingRelease, setPendingRelease] = useState<Set<string>>(new Set()); // fishId
 
-  async function load() {
-    setLoading(true);
-    const [a, b] = await Promise.all([
-      fetch('/api/mine', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ fish: [] })),
-      fetch('/api/my-catches', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ fish: [] })),
-    ]);
-    setMine((a?.fish ?? []) as MyFish[]);
-    setCatches((b?.fish ?? []) as MyCatch[]);
-    setLoading(false);
-  }
-
+  // 首屏加载一次；之后不再整页刷新，由本地状态维护
   useEffect(() => {
-    load();
-    const onRefresh = () => load();
-    window.addEventListener('pond:refresh', onRefresh);
-    return () => window.removeEventListener('pond:refresh', onRefresh);
+    (async () => {
+      try {
+        const [a, b] = await Promise.all([
+          fetch('/api/mine', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ fish: [] })),
+          fetch('/api/my-catches', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ fish: [] })),
+        ]);
+        setMine((a?.fish ?? []) as MyFish[]);
+        setCatches((b?.fish ?? []) as MyCatch[]);
+      } finally {
+        setInitialLoading(false);
+      }
+    })();
   }, []);
 
-  // —— 删除我的鱼：不广播，只本地通知池塘移除 —— //
-  async function deleteMyFish(fishId: string) {
-    if (!confirm('确定删除这条还在池塘里的鱼吗？删除后不可恢复。')) return;
-    if (deleting.has(fishId)) return;
+  /** 删除我的鱼：乐观移除；不广播；不整页刷新；失败也不回滚（后端幂等处理即可） */
+  function deleteMyFish(fishId: string) {
+    if (pendingDelete.has(fishId)) return;
+    const t = mine.find(f => f.id === fishId);
+    if (!t || !t.in_pond) return;
 
-    // 乐观删除 + 定向移除池塘里的该鱼
-    setMine(list => list.filter(f => f.id !== fishId));
-    try {
-      window.dispatchEvent(new CustomEvent('pond:remove_fish', { detail: { fishId } }));
-    } catch {}
+    // 乐观：立即本地移除
+    setMine(prev => prev.filter(f => f.id !== fishId));
 
-    setDeleting(prev => new Set(prev).add(fishId));
-    try {
-      const res = await fetch(`/api/fish/${fishId}`, { method: 'DELETE' });
-      if (!res.ok) {
-        let reason = '';
-        try { const j = await res.json(); reason = j?.error || ''; } catch {}
-        const idempotent = new Set(['forbidden_or_not_in_pond', 'not_found']);
-        if (idempotent.has(reason)) {
-          show('已删除这条鱼');
-          return;
+    // 禁用按钮，异步执行
+    setPendingDelete(s => new Set(s).add(fishId));
+    requestAnimationFrame(() => {
+      (async () => {
+        try {
+          await fetch(`/api/fish/${fishId}`, { method: 'DELETE' });
+          // 不提示、不回滚；由后端保证幂等成功（不存在/已被钓走也返回 200）
+        } catch {
+          // 静默
+        } finally {
+          setPendingDelete(s => { const n = new Set(s); n.delete(fishId); return n; });
         }
-        show('删除失败，请稍后重试');
-        // 回滚：仅提示用户刷新，不强制回插 UI（避免状态错乱）
-        return;
-      }
-      show('已删除这条鱼');
-    } catch {
-      show('网络异常，删除失败');
-    } finally {
-      setDeleting(prev => {
-        const s = new Set(prev); s.delete(fishId); return s;
-      });
-    }
+      })();
+    });
   }
 
-  // —— 放回池塘：乐观更新 + 广播 pond:refresh —— //
-  async function releaseFish(fishId: string) {
-    if (releasing.has(fishId)) return;
+  /** 放回池塘：乐观从“我的收获”移除；仅在成功后广播 pond:refresh；不整页刷新 */
+  function releaseFish(fishId: string) {
+    if (pendingRelease.has(fishId)) return;
 
-    // 乐观从“我的收获”移除
-    setCatches(list => list.filter(c => c.fish_id !== fishId));
-    setReleasing(prev => new Set(prev).add(fishId));
+    // 乐观：本地从“我的收获”移除
+    setCatches(prev => prev.filter(c => c.fish_id !== fishId));
 
-    try {
-      const res = await fetch('/api/release', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fishId }),
-      });
-
-      if (!res.ok) {
-        let reason = '';
-        try { const j = await res.json(); reason = j?.error || ''; } catch {}
-        const idempotent = new Set(['not_your_catch', 'already_released', 'forbidden_or_not_in_pond', 'not_found']);
-        if (idempotent.has(reason)) {
-          show('已放回池塘');
-        } else {
-          show('放回失败，请稍后重试');
+    setPendingRelease(s => new Set(s).add(fishId));
+    requestAnimationFrame(() => {
+      (async () => {
+        try {
+          const res = await fetch('/api/release', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fishId }),
+          });
+          if (res.ok) {
+            // 只有真正成功后才广播，让池塘/公告自行同步；本页不刷新列表
+            try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
+          }
+          // 非 200 也不回滚，交给后续 SSE/轮询（如果你启用了）去校正
+        } catch {
+          // 静默
+        } finally {
+          setPendingRelease(s => { const n = new Set(s); n.delete(fishId); return n; });
         }
-      } else {
-        show('已放回池塘');
-      }
-
-      // 广播：让池塘与公告栏按照你现有逻辑刷新
-      try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
-    } catch {
-      show('网络异常，放回失败');
-    } finally {
-      setReleasing(prev => {
-        const s = new Set(prev); s.delete(fishId); return s;
-      });
-    }
+      })();
+    });
   }
 
-  /** 卡片统一尺寸，按钮对齐到底部 */
+  /** 统一卡片（固定高度、按钮底部对齐） */
   const TILE_HEIGHT = 280;
   const PREVIEW_HEIGHT = 130;
 
@@ -159,8 +114,7 @@ export default function MyMineClient() {
     name: string;
     meta?: string;
     actions?: React.ReactNode;
-    dim?: boolean; // 可选：置灰
-    busy?: boolean; // 可选：进行中
+    busy?: boolean;
   }) => (
     <div
       style={{
@@ -216,67 +170,64 @@ export default function MyMineClient() {
   );
 
   return (
-    <>
-      {Toast}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
-        {/* 左列：我画的鱼（独立滚动） */}
-        <section style={columnStyle}>
-          <h2 style={{ fontSize: 16, margin: 0 }}>我画的鱼（{mine.length}）</h2>
-          {loading && <div className="muted">加载中…</div>}
-          {!loading && mine.length === 0 && <div className="muted">暂无</div>}
-          {!loading && (
-            <Grid>
-              {mine.map(f => (
-                <Tile
-                  key={f.id}
-                  img={f.data_url}
-                  name={f.name || '无名鱼'}
-                  meta={
-                    f.in_pond
-                      ? '状态：池塘中'
-                      : f.angler_username
-                        ? `已被 ${f.angler_username} 在 ${f.caught_at ? new Date(f.caught_at).toLocaleString() : '未知时间'} 钓走`
-                       : '状态：已被钓走'
-                  }
-                  busy={deleting.has(f.id)}
-                  actions={
-                    f.in_pond ? (
-                      <button className="ghost" onClick={() => deleteMyFish(f.id)} disabled={deleting.has(f.id)}>
-                        {deleting.has(f.id) ? '处理中…' : '🗑 删除'}
-                      </button>
-                    ) : null
-                  }
-                />
-              ))}
-            </Grid>
-          )}
-        </section>
-
-        {/* 右列：我的收获（独立滚动） */}
-        <section style={columnStyle}>
-          <h2 style={{ fontSize: 16, margin: 0 }}>我的收获（{catches.length}）</h2>
-          {loading && <div className="muted">加载中…</div>}
-          {!loading && catches.length === 0 && <div className="muted">暂无</div>}
-          {!loading && (
-            <Grid>
-              {catches.map(c => (
-                <Tile
-                  key={c.catch_id}
-                  img={c.data_url}
-                  name={c.name || '无名鱼'}
-                  meta={`来自 ${c.owner_username || '未知'}${c.caught_at ? ` · ${new Date(c.caught_at).toLocaleString()}` : ''}`}
-                  busy={releasing.has(c.fish_id)}
-                  actions={
-                    <button className="ghost" onClick={() => releaseFish(c.fish_id)} disabled={releasing.has(c.fish_id)}>
-                      {releasing.has(c.fish_id) ? '处理中…' : '🪣 放回池塘'}
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
+      {/* 左列：我画的鱼（独立滚动） */}
+      <section style={columnStyle}>
+        <h2 style={{ fontSize: 16, margin: 0 }}>我画的鱼（{mine.length}）</h2>
+        {initialLoading && <div className="muted">加载中…</div>}
+        {!initialLoading && mine.length === 0 && <div className="muted">暂无</div>}
+        {!initialLoading && (
+          <Grid>
+            {mine.map(f => (
+              <Tile
+                key={f.id}
+                img={f.data_url}
+                name={f.name || '无名鱼'}
+                meta={
+                  f.in_pond
+                    ? '状态：池塘中'
+                    : f.angler_username
+                      ? `已被 ${f.angler_username} 在 ${f.caught_at ? new Date(f.caught_at).toLocaleString() : '未知时间'} 钓走`
+                      : '状态：已被钓走'
+                }
+                busy={pendingDelete.has(f.id)}
+                actions={
+                  f.in_pond ? (
+                    <button className="ghost" onClick={() => deleteMyFish(f.id)} disabled={pendingDelete.has(f.id)}>
+                      {pendingDelete.has(f.id) ? '删除中…' : '🗑 删除'}
                     </button>
-                  }
-                />
-              ))}
-            </Grid>
-          )}
-        </section>
-      </div>
-    </>
+                  ) : null
+                }
+              />
+            ))}
+          </Grid>
+        )}
+      </section>
+
+      {/* 右列：我的收获（独立滚动） */}
+      <section style={columnStyle}>
+        <h2 style={{ fontSize: 16, margin: 0 }}>我的收获（{catches.length}）</h2>
+        {initialLoading && <div className="muted">加载中…</div>}
+        {!initialLoading && catches.length === 0 && <div className="muted">暂无</div>}
+        {!initialLoading && (
+          <Grid>
+            {catches.map(c => (
+              <Tile
+                key={c.catch_id}
+                img={c.data_url}
+                name={c.name || '无名鱼'}
+                meta={`来自 ${c.owner_username || '未知'}${c.caught_at ? ` · ${new Date(c.caught_at).toLocaleString()}` : ''}`}
+                busy={pendingRelease.has(c.fish_id)}
+                actions={
+                  <button className="ghost" onClick={() => releaseFish(c.fish_id)} disabled={pendingRelease.has(c.fish_id)}>
+                    {pendingRelease.has(c.fish_id) ? '放回中…' : '🪣 放回池塘'}
+                  </button>
+                }
+              />
+            ))}
+          </Grid>
+        )}
+      </section>
+    </div>
   );
 }
