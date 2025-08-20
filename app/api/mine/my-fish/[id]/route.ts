@@ -8,7 +8,8 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
 
   const fishId = params.id;
 
-  const rows = await sql<any[]>/*sql*/`
+  // 查询鱼状态
+  const q = await sql<any[]>/*sql*/`
     SELECT
       f.id, f.owner_id, f.name, f.in_pond,
       (c.id IS NOT NULL) AS caught
@@ -17,9 +18,9 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
     WHERE f.id = ${fishId}
     LIMIT 1
   `;
-  if (rows.length === 0) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+  if (q.rows.length === 0) return NextResponse.json({ error: 'not_found' }, { status: 404 });
 
-  const fish = rows[0];
+  const fish = q.rows[0];
   if (fish.owner_id !== userId) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
@@ -35,7 +36,7 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
       WHERE id = ${fishId} AND owner_id = ${userId}
     `;
 
-    // 你的 pond_events 是 BIGSERIAL + BIGINT 列；我们仅写快照字段，BIGINT 列设 NULL。
+    // pond_events 的 BIGINT 外键列留空，仅写快照
     await trx/*sql*/`
       INSERT INTO pond_events (type, actor_id, target_fish_id, target_owner_id, fish_name, owner_username, actor_username)
       VALUES ('DELETE', NULL, NULL, NULL, ${fish.name}, ${actorUsername}, ${actorUsername})
@@ -44,3 +45,4 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
 
   return NextResponse.json({ ok: true }, { status: 200 });
 }
+
