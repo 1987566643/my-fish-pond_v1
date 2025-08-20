@@ -118,19 +118,18 @@ export default function PondClient() {
     const json = await res.json();
     setPondFish(json.fish || []);
   
-    // —— 刷新今日收获 —— //
+    // —— 刷新今日收获（后端计数为准） —— //
     try {
-      const mineCatch = await fetch('/api/catch', { cache: 'no-store' }).then((r) => r.json());
-      if (mineCatch && mineCatch.ok) {
-        setTodayCatchCount(mineCatch.today_catch ?? 0);
+      const j = await fetch('/api/catch', { cache: 'no-store' }).then(r => r.json());
+      if (j && j.ok) {
+        setTodayCatchCount(j.today_catch ?? 0);
+        // 如需显示总收获也可： setTotalCatch(j.total_catch);
       } else {
         setTodayCatchCount(0);
       }
-    } catch (e) {
-      console.error('refreshAll /api/catch failed', e);
+    } catch {
       setTodayCatchCount(0);
     }
-  }
 
 
 
