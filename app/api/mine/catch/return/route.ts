@@ -9,7 +9,7 @@ export async function POST(req: Request) {
   const { catchId } = await req.json().catch(() => ({}));
   if (!catchId) return NextResponse.json({ error: 'missing_catch_id' }, { status: 400 });
 
-  const rows = await sql<any[]>/*sql*/`
+  const q = await sql<any[]>/*sql*/`
     SELECT
       c.id      AS catch_id,
       c.angler_id,
@@ -21,14 +21,15 @@ export async function POST(req: Request) {
     WHERE c.id = ${catchId}
     LIMIT 1
   `;
-  if (rows.length === 0) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+  if (q.rows.length === 0) return NextResponse.json({ error: 'not_found' }, { status: 404 });
 
-  const row = rows[0];
+  const row = q.rows[0];
   if (row.angler_id !== userId) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
 
-  const users = await sql<{ id: string; username: string }[]>/*sql*/`
+  const usersRes = await sql<{ id: string; username: string }[]>/*sql*/`
     SELECT id, username FROM users WHERE id IN (${row.owner_id}, ${userId})
   `;
+  const users = usersRes.rows;
   const ownerUsername = users.find(u => u.id === row.owner_id)?.username || 'unknown';
   const actorUsername = users.find(u => u.id === userId)?.username || 'unknown';
 
@@ -57,3 +58,4 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ ok: true }, { status: 200 });
 }
+
