@@ -24,41 +24,17 @@ type MyCatch = {
   h: number;
   caught_at?: string | null;
 };
-useEffect(() => {
-  const es = new EventSource('/api/stream');
-  es.addEventListener('pond', () => {
-    // 触发一次轻量合并（你前面已经写过 softMerge interval；这里直接复用 load+merge 或只 GET /api/mine）
-    (async () => {
-      try {
-        const a = await fetch('/api/mine', { cache: 'no-store' }).then(r => r.json()).catch(() => null);
-        if (a?.fish) {
-          const incoming: Record<string, MyFish> = Object.create(null);
-          (a.fish as MyFish[]).forEach(f => { incoming[f.id] = f; });
-          setMine(cur => cur.map(old => incoming[old.id] ? { ...old,
-            in_pond: incoming[old.id].in_pond,
-            angler_username: incoming[old.id].angler_username,
-            caught_at: incoming[old.id].caught_at,
-            name: incoming[old.id].name ?? old.name,
-            data_url: incoming[old.id].data_url ?? old.data_url,
-          } : old));
-        }
-      } catch {}
-    })();
-  });
-  es.onerror = () => {};
-  return () => es.close();
-}, []);
 
 export default function MyMineClient() {
   const [mine, setMine] = useState<MyFish[]>([]);
   const [catches, setCatches] = useState<MyCatch[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
 
-  // 仅用于按钮禁用（不做提示、不触发整页刷新）
+  // 仅用于按钮禁用（不弹提示）
   const [pendingDelete, setPendingDelete] = useState<Set<string>>(new Set());   // fishId
   const [pendingRelease, setPendingRelease] = useState<Set<string>>(new Set()); // fishId
 
-  // 首屏加载一次
+  // —— 首屏加载一次 —— //
   useEffect(() => {
     (async () => {
       try {
@@ -74,76 +50,70 @@ export default function MyMineClient() {
     })();
   }, []);
 
-  /** 定时“软同步”：仅合并状态，不替换数组，避免跳动 */
-  useEffect(() => {
-    let iv: number | undefined;
-
-    async function softMerge() {
-      // 页面不可见时跳过
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-
-      try {
-        const [a, b] = await Promise.all([
-          fetch('/api/mine', { cache: 'no-store' }).then(r => r.json()).catch(() => null),
-          fetch('/api/my-catches', { cache: 'no-store' }).then(r => r.json()).catch(() => null),
-        ]);
-
-        if (a?.fish) {
-          const incoming: Record<string, MyFish> = Object.create(null);
-          (a.fish as MyFish[]).forEach(f => { incoming[f.id] = f; });
-          setMine(cur => cur.map(old => incoming[old.id] ? { ...old,
-            in_pond: incoming[old.id].in_pond,
-            angler_username: incoming[old.id].angler_username,
-            caught_at: incoming[old.id].caught_at,
-            // 名称/图也可能被作者改过
-            name: incoming[old.id].name ?? old.name,
-            data_url: incoming[old.id].data_url ?? old.data_url,
-          } : old));
-        }
-        if (b?.fish) {
-          const incoming: Record<string, MyCatch> = Object.create(null);
-          (b.fish as MyCatch[]).forEach(c => { incoming[c.catch_id] = c; });
-          setCatches(cur => {
-            // 用 fish_id 主键对齐，保序
-            const mapByFish = new Map<string, MyCatch>();
-            (b.fish as MyCatch[]).forEach(c => mapByFish.set(c.fish_id, c));
-            return cur.map(old => mapByFish.get(old.fish_id) ? { ...old, ...mapByFish.get(old.fish_id)! } : old);
-          });
-        }
-      } catch { /* 静默 */ }
+  // —— 轻量合并：只按 id 覆盖状态，不重排 —— //
+  async function softMergeMine() {
+    try {
+      const a = await fetch('/api/mine', { cache: 'no-store' }).then(r => r.json()).catch(() => null);
+      if (!a?.fish) return;
+      const incoming: Record<string, MyFish> = Object.create(null);
+      (a.fish as MyFish[]).forEach(f => { incoming[f.id] = f; });
+      setMine(cur =>
+        cur.map(old =>
+          incoming[old.id]
+            ? {
+                ...old,
+                in_pond: incoming[old.id].in_pond,
+                angler_username: incoming[old.id].angler_username,
+                caught_at: incoming[old.id].caught_at,
+                name: incoming[old.id].name ?? old.name,
+                data_url: incoming[old.id].data_url ?? old.data_url,
+              }
+            : old
+        )
+      );
+    } catch {
+      // 静默
     }
+  }
 
-    iv = window.setInterval(softMerge, 8000) as unknown as number;
-    const onVis = () => { if (document.visibilityState === 'visible') softMerge(); };
-    window.addEventListener('visibilitychange', onVis);
-    return () => {
-      if (iv) clearInterval(iv);
-      window.removeEventListener('visibilitychange', onVis);
+  // —— 订阅 SSE：别人操作后，轻量合并一次“我画的鱼” —— //
+  useEffect(() => {
+    const es = new EventSource('/api/stream');
+    let timer: any = null;
+    const onPond = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        softMergeMine();
+      }, 120);
     };
-  }, []);
+    es.addEventListener('pond', onPond);
+    es.onerror = () => { /* 浏览器自动重连 */ };
+    return () => {
+      if (timer) clearTimeout(timer);
+      es.close();
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** 删除我的鱼：rAF 解耦 + 纯乐观；不回滚、不全量刷新 */
+  // —— 删除：rAF 解耦 + 纯乐观；不回滚；池塘定向隐藏 —— //
   function deleteMyFish(fishId: string) {
     if (pendingDelete.has(fishId)) return;
-
     const t = mine.find(f => f.id === fishId);
     if (!t || !t.in_pond) return;
 
-    // 乐观：立即移除；池塘定向隐藏
+    // 乐观移除
     setMine(prev => prev.filter(f => f.id !== fishId));
+    // 定向让池塘隐藏该鱼
     try { window.dispatchEvent(new CustomEvent('pond:remove_fish', { detail: { fishId } })); } catch {}
 
-    // 解耦异步：先完成一次 paint
     setPendingDelete(s => new Set(s).add(fishId));
     requestAnimationFrame(() => {
       (async () => {
         try {
-          // 后端建议：DELETE 接口做“幂等成功”，即
-          // - 本人 + in_pond=TRUE → 真正删除
-          // - 其他情况（不存在/已被钓走）→ 返回 200 {ok:true}
+          // 建议后端幂等成功：非本人/不在池塘也返回 200 {ok:true}
           await fetch(`/api/fish/${fishId}`, { method: 'DELETE' });
         } catch {
-          // 静默：保持乐观结果；后续 softMerge 会矫正
+          // 静默；SSE/软合并会矫正
         } finally {
           setPendingDelete(s => { const n = new Set(s); n.delete(fishId); return n; });
         }
@@ -151,11 +121,11 @@ export default function MyMineClient() {
     });
   }
 
-  /** 放回池塘：rAF 解耦 + 纯乐观；只在成功后广播 pond:refresh；不回滚 */
+  // —— 放回：rAF 解耦 + 纯乐观；仅成功后广播 pond:refresh；不回滚 —— //
   function releaseFish(fishId: string) {
     if (pendingRelease.has(fishId)) return;
 
-    // 乐观：立即把卡片从“我的收获”里移除
+    // 乐观移除“我的收获”卡片
     setCatches(prev => prev.filter(c => c.fish_id !== fishId));
 
     setPendingRelease(s => new Set(s).add(fishId));
@@ -168,11 +138,11 @@ export default function MyMineClient() {
             body: JSON.stringify({ fishId }),
           });
           if (res.ok) {
-            // 只有在真正放回成功后再广播 → 避免“消失又回滚”闪烁
+            // 成功后广播，让池塘/公告立即更新
             try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
           }
         } catch {
-          // 静默：保持乐观结果；后续 softMerge 会矫正
+          // 静默；SSE/软合并会矫正
         } finally {
           setPendingRelease(s => { const n = new Set(s); n.delete(fishId); return n; });
         }
@@ -180,7 +150,7 @@ export default function MyMineClient() {
     });
   }
 
-  /** 统一卡片样式（固定高度、按钮底部对齐） */
+  // —— 统一卡片（固定高度、按钮底部对齐） —— //
   const TILE_HEIGHT = 280;
   const PREVIEW_HEIGHT = 130;
 
@@ -244,6 +214,7 @@ export default function MyMineClient() {
     </div>
   );
 
+  // —— 渲染 —— //
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
       {/* 左列：我画的鱼（独立滚动） */}
@@ -284,7 +255,7 @@ export default function MyMineClient() {
         <h2 style={{ fontSize: 16, margin: 0 }}>我的收获（{catches.length}）</h2>
         {initialLoading && <div className="muted">加载中…</div>}
         {!initialLoading && catches.length === 0 && <div className="muted">暂无</div>}
-        {!initialLoading && (
+        {!初始加载 && (
           <Grid>
             {catches.map(c => (
               <Tile
