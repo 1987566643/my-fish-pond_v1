@@ -5,7 +5,7 @@ import { sql } from '../../../lib/db';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-/** 计算“北京时间 4 点”为边界的今天窗口 [start, end)（返回 UTC 时间） */
+/** 计算“北京时间 4 点”为边界的今天窗口 [start, end)（UTC 时间点） */
 function todayWindowBJ4(): { start: Date; end: Date } {
   const now = new Date();
 
@@ -26,7 +26,6 @@ function todayWindowBJ4(): { start: Date; end: Date } {
   const endBJ = new Date(startBJ.getTime());
   endBJ.setUTCDate(endBJ.getUTCDate() + 1);
 
-  // 转回 UTC（startBJ/endBJ 现在其实就是 UTC 时间点）
   return { start: startBJ, end: endBJ };
 }
 
@@ -34,9 +33,11 @@ function todayWindowBJ4(): { start: Date; end: Date } {
 export async function GET() {
   const session = await getSession().catch(() => null);
   const { start, end } = todayWindowBJ4();
+  const startIso = start.toISOString();
+  const endIso = end.toISOString();
 
   try {
-    // 主查询：只按 in_pond 取鱼 & 主人用户名；点赞/点踩直接读 fish 表字段
+    // 主查询：按 in_pond 取鱼 & 主人用户名；点赞/点踩直接读 fish 表字段
     const { rows } = await sql/*sql*/`
       SELECT
         f.id,
@@ -57,7 +58,6 @@ export async function GET() {
 
     // 如果已登录，再补充 my_vote（当天这位用户对每条鱼的投票：1 / -1 / null）
     if (session) {
-      // 为每条鱼查一次子查询（简单直接，行数不大时 OK；后续也可以改批量）
       const withVote = await Promise.all(
         rows.map(async (r: any) => {
           const { rows: v } = await sql/*sql*/`
@@ -65,8 +65,8 @@ export async function GET() {
             FROM reactions
             WHERE user_id = ${session.id}
               AND fish_id = ${r.id}
-              AND created_at >= ${start}
-              AND created_at <  ${end}
+              AND created_at >= ${startIso}
+              AND created_at <  ${endIso}
             ORDER BY created_at DESC
             LIMIT 1
           `;
