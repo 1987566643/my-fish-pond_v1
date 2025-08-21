@@ -777,27 +777,28 @@ export default function PondClient() {
           <div className="muted" style={{ opacity: .8, marginBottom: 8 }}>已存活：{d}天{h}小时{m}分</div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
-              className="ghost"
-              onClick={() => reactToFish(s.id, 1)}
-              style={{
-                borderColor: liked ? '#ffd166' : 'rgba(255,255,255,.25)',
-                background: liked ? 'rgba(255,209,102,.15)' : 'transparent'
-              }}
-              title={liked ? '取消点赞' : '点赞'}
-            >
-              {liked ? '取消点赞' : '点赞'} &nbsp;👍 {s.likes}
-            </button>
-            <button
-              className="ghost"
-              onClick={() => reactToFish(s.id, -1)}
-              style={{
-                borderColor: disliked ? '#ff6b6b' : 'rgba(255,255,255,.25)',
-                background: disliked ? 'rgba(255,107,107,.15)' : 'transparent'
-              }}
-              title={disliked ? '取消点踩' : '点踩'}
-            >
-               {disliked ? '取消点踩' : '点踩'} &nbsp;👎 {s.dislikes}
-            </button>
+                className="ghost"
+                onClick={() => reactToFish(s.id, 1)}
+                style={{
+                  borderColor: liked ? '#ffd166' : 'rgba(255,255,255,.25)',
+                  background: liked ? 'rgba(255,209,102,.15)' : 'transparent'
+                }}
+                aria-label={liked ? '取消点赞' : '点赞'}
+              >
+                {liked ? '取消点赞' : '点赞'}&nbsp;👍 {s.likes}
+              </button>
+              
+              <button
+                className="ghost"
+                onClick={() => reactToFish(s.id, -1)}
+                style={{
+                  borderColor: disliked ? '#ff6b6b' : 'rgba(255,255,255,.25)',
+                  background: disliked ? 'rgba(255,107,107,.15)' : 'transparent'
+                }}
+                aria-label={disliked ? '取消点踩' : '点踩'}
+              >
+                {disliked ? '取消点踩' : '点踩'}&nbsp;👎 {s.dislikes}
+              </button>
           </div>
         </div>
       );
