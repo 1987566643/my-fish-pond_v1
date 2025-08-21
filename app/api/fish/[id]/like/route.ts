@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { sql } from '@/lib/db';
-import { getSession } from '@/lib/auth';
+import { sql } from '../../../../../lib/db';
+import { getSession } from '../../../../../lib/auth';
 
 // 点赞 / 取消赞
 export async function POST(req: Request, { params }: { params: { id: string } }) {
@@ -46,3 +46,4 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     return NextResponse.json({ error: 'internal_error' }, { status: 500 });
   }
 }
+
