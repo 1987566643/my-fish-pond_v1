@@ -96,7 +96,8 @@ export default function PondClient() {
   async function refreshAll() {
     const res = await fetch('/api/fish', { cache: 'no-store' });
     const json = await res.json();
-    setPondFish(json.fish || []);
+    const list = json?.fish ?? json?.items ?? json?.rows ?? [];
+    setPondFish(Array.isArray(list) ? list : []);
 
     try {
       const j = await fetch('/api/catch', { cache: 'no-store' }).then(r => r.json());
