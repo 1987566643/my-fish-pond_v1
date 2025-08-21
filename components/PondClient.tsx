@@ -677,6 +677,54 @@ export default function PondClient() {
     fishingRef.current.hasHook = false;
     fishingRef.current.caughtId = null;
   }
+  function voteToggle(id: string, kind: 'like' | 'dislike') {
+      // 1) 本地乐观更新（让文案/emoji/数字立即变化）
+      setPondFish(list => list.map(f => {
+        if (f.id !== id) return f;
+        let { likes, dislikes, my_vote } = f;
+        if (kind === 'like') {
+          if (my_vote === 1) {            // 取消点赞
+            my_vote = null; likes = Math.max(0, likes - 1);
+          } else {                        // 点赞（若之前点踩过则撤销点踩）
+            if (my_vote === -1) dislikes = Math.max(0, dislikes - 1);
+            my_vote = 1; likes += 1;
+          }
+        } else {
+          if (my_vote === -1) {           // 取消点踩
+            my_vote = null; dislikes = Math.max(0, dislikes - 1);
+          } else {                        // 点踩（若之前点赞过则撤销点赞）
+            if (my_vote === 1) likes = Math.max(0, likes - 1);
+            my_vote = -1; dislikes += 1;
+          }
+        }
+        return { ...f, likes, dislikes, my_vote };
+      }));
+    
+      // 同步 spritesRef，悬浮卡读取它的数据
+      const s = spritesRef.current.find(x => x.id === id);
+      if (s) {
+        const f = (function findInList() {
+          // 从最新的 pondFish（乐观后的）里找回这条记录
+          // 注意：setPondFish 是异步，这里直接按当前 s/my_vote 推导也行：
+          let likes = s.likes, dislikes = s.dislikes, my_vote = s.my_vote ?? null;
+          if (kind === 'like') {
+            if (my_vote === 1) { my_vote = null; likes = Math.max(0, likes - 1); }
+            else { if (my_vote === -1) dislikes = Math.max(0, dislikes - 1); my_vote = 1; likes += 1; }
+          } else {
+            if (my_vote === -1) { my_vote = null; dislikes = Math.max(0, dislikes - 1); }
+            else { if (my_vote === 1) likes = Math.max(0, likes - 1); my_vote = -1; dislikes += 1; }
+          }
+          return { likes, dislikes, my_vote };
+        })();
+        s.likes = f.likes; s.dislikes = f.dislikes; s.my_vote = f.my_vote ?? null;
+      }
+    
+      // 2) 触发悬浮卡重渲染，强制刷新 title（关键！）
+      setHovered(h => (h ? { ...h } : h));
+    
+      // 3) 打到后端，后端会做真正的“同票即取消”及聚合归一
+      reactToFish(id, kind === 'like' ? 1 : -1);
+    }
 
   /** 点赞/点踩（再次点击同一按钮视为取消） */
   async function reactToFish(id: string, value: 1 | -1) {
@@ -749,8 +797,8 @@ export default function PondClient() {
       const h = Math.floor(ageMs / 3600000) % 24;
       const m = Math.floor(ageMs / 60000) % 60;
 
-      const liked = s.my_vote === 1;
-      const disliked = s.my_vote === -1;
+      const likeActive = s.my_vote === 1;
+      const dislikeActive = s.my_vote === -1;
 
       hoverCard = (
         <div
@@ -777,29 +825,29 @@ export default function PondClient() {
           <div className="muted" style={{ opacity: .8, marginBottom: 8 }}>已存活：{d}天{h}小时{m}分</div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
-                key={`like-${liked ? 1 : 0}`}
+                key={`like-${s.id}-${likeActive ? 1 : 0}-${s.likes}`}   // 关键：状态变化就重挂载，原生 title 立即刷新
                 className="ghost"
-                onClick={() => reactToFish(s.id, 1)}
+                onClick={() => voteToggle(s.id, 'like')}
                 style={{
-                  borderColor: liked ? '#ffd166' : 'rgba(255,255,255,.25)',
-                  background: liked ? 'rgba(255,209,102,.15)' : 'transparent'
+                  borderColor: likeActive ? '#ffd166' : 'rgba(255,255,255,.25)',
+                  background: likeActive ? 'rgba(255,209,102,.15)' : 'transparent'
                 }}
-                title={liked ? '取消点赞' : '点赞'}
+                title={likeActive ? '取消点赞' : '点赞'}
               >
-                👍 {s.likes}
+                {likeActive ? '🖐' : '👍'} {s.likes}
               </button>
               
               <button
-                key={`dislike-${disliked ? 1 : 0}`}
+                key={`dislike-${s.id}-${dislikeActive ? 1 : 0}-${s.dislikes}`} // 同理
                 className="ghost"
-                onClick={() => reactToFish(s.id, -1)}
+                onClick={() => voteToggle(s.id, 'dislike')}
                 style={{
-                  borderColor: disliked ? '#ff6b6b' : 'rgba(255,255,255,.25)',
-                  background: disliked ? 'rgba(255,107,107,.15)' : 'transparent'
+                  borderColor: dislikeActive ? '#ff6b6b' : 'rgba(255,255,255,.25)',
+                  background: dislikeActive ? 'rgba(255,107,107,.15)' : 'transparent'
                 }}
-                title={disliked ? '取消点踩' : '点踩'}
+                title={dislikeActive ? '取消点踩' : '点踩'}
               >
-                👎 {s.dislikes}
+                {dislikeActive ? '✋' : '👎'} {s.dislikes}
               </button>
 
           </div>
