@@ -12,8 +12,6 @@ const EXPORT_W = 420;          // 画布导出基准宽
 const EXPORT_H = 240;          // 画布导出基准高
 /** ============================================== */
 
-type VoteType = 'LIKE' | 'DISLIKE' | null;
-
 /** 后端返回的鱼结构（/api/fish GET 已联表 users 并统计 reactions） */
 type ServerFish = {
   id: string;
@@ -89,12 +87,14 @@ export default function PondClient() {
   /** 悬浮的提示框定位（在池塘画布内的坐标） */
   const [hovered, setHovered] = useState<{ id: string; x: number; y: number } | null>(null);
   const [hoverLock, setHoverLock] = useState(false);
-  const hoverAnchorRef = useRef<{ x: number; y: number } | null>(null); // 锁定后固定坐标
 
   /** 池塘数据 */
   const pondRef = useRef<HTMLCanvasElement>(null);
   const [pondFish, setPondFish] = useState<ServerFish[]>([]);
   const [todayCatchCount, setTodayCatchCount] = useState(0);
+
+  /** 我今天对每条鱼的投票：{ [fishId]: -1 | 0 | 1 }（0 表示未投/已撤销） */
+  const [myVotes, setMyVotes] = useState<Record<string, -1 | 0 | 1>>({});
 
   /** 画鱼对话框与画布 */
   const drawDlgRef = useRef<HTMLDialogElement>(null);
@@ -119,30 +119,7 @@ export default function PondClient() {
     caughtId: null as null | string,
   });
 
-  /** 本地“当日投票”状态：id -> LIKE / DISLIKE / null */
-  const [voteMap, setVoteMap] = useState<Record<string, VoteType>>({});
-  const voteMapRef = useRef(voteMap);
-  useEffect(() => { voteMapRef.current = voteMap; }, [voteMap]);
-
-  // 读取本地投票状态（按北京时间4点切日）
-  useEffect(() => {
-    try {
-      const key = localVoteKey();
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const obj = JSON.parse(raw) as Record<string, VoteType>;
-        setVoteMap(obj || {});
-      }
-    } catch {}
-  }, []);
-  // 同步到 localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(localVoteKey(), JSON.stringify(voteMap));
-    } catch {}
-  }, [voteMap]);
-
-  /** 从后端刷新当前池塘鱼和“今日收获数” */
+  /** 从后端刷新当前池塘鱼 + 今日收获 + 我今天的投票态 */
   async function refreshAll() {
     // —— 刷新池塘 —— //
     const res = await fetch('/api/fish', { cache: 'no-store' });
@@ -159,6 +136,14 @@ export default function PondClient() {
       }
     } catch {
       setTodayCatchCount(0);
+    }
+
+    // —— 刷新“我今天的投票态”（4 点为界由后端处理） —— //
+    try {
+      const r = await fetch('/api/reaction', { cache: 'no-store' }).then(r => r.json());
+      if (r && r.ok && r.votes) setMyVotes(r.votes);
+    } catch {
+      // 忽略网络错误
     }
   }
 
@@ -179,7 +164,7 @@ export default function PondClient() {
 
     function drawGuides() {
       ctx.clearRect(0, 0, cvs.width, cvs.height);
-      // 背景
+      // 背景（简单淡淡的泡影）
       ctx.save();
       ctx.globalAlpha = 0.08;
       for (let i = 0; i < 6; i++) {
@@ -348,6 +333,7 @@ export default function PondClient() {
   const bubblesRef = useRef<Bubble[]>([]);
 
   const lastTs = useRef(performance.now());
+
   /** 柔和水面：渐变 + 低频波纹 + 持久气泡 */
   function drawWater(ctx: CanvasRenderingContext2D, W: number, H: number, ts: number) {
     // 背景渐变：顶部略深，底部略亮
@@ -386,7 +372,7 @@ export default function PondClient() {
       ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(205,234,255,0.9)';
       ctx.fill();
-      // 漫反射高光
+      // 高光
       ctx.beginPath();
       ctx.arc(b.x - b.r * 0.35, b.y - b.r * 0.35, b.r * 0.35, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(255,255,255,0.6)';
@@ -546,10 +532,10 @@ export default function PondClient() {
 
       // 更新持久气泡（缓慢上浮 & 回到底部）
       {
-        const dt2 = Math.min(0.033, (ts - lastTs.current) / 1000);
+        const dtt = Math.min(0.033, (ts - lastTs.current) / 1000);
         for (let i = 0; i < bubblesRef.current.length; i++) {
           const b = bubblesRef.current[i];
-          b.y -= b.vy * dt2;
+          b.y -= b.vy * dtt;
           if (b.y + b.r < -10) {
             b.y = H + 20 + Math.random() * 40;   // 回到底部
             b.x = Math.random() * W;
@@ -595,7 +581,7 @@ export default function PondClient() {
 
     // 悬浮检测（计算是否在某鱼的包围盒内）
     function onMove(ev: PointerEvent) {
-      if (hoverLock) return; // 锁定时不再更新 hover 目标与位置
+      if (hoverLock) return; // 锁住时不更新 hovered，避免鼠标移到悬浮卡上时卡片跟随鱼移动
       const rect = cvs.getBoundingClientRect();
       const x = ev.clientX - rect.left;
       const y = ev.clientY - rect.top;
@@ -611,7 +597,6 @@ export default function PondClient() {
         }
       }
       setHovered(found);
-      if (!found) hoverAnchorRef.current = null;
     }
 
     const onResize = () => setupHiDPI(cvs);
@@ -679,67 +664,39 @@ export default function PondClient() {
     fishingRef.current.caughtId = null;
   }
 
-  /** —— 点赞 / 点踩：乐观更新 + 本地“当日状态” —— */
-  function mutateSpriteCount(id: string, deltaLike: number, deltaDislike: number) {
-    // 更新渲染用的 spritesRef 与 pondFish 状态，保证数字即时变
-    const arr = spritesRef.current || [];
-    for (let i = 0; i < arr.length; i++) {
-      if (arr[i].id === id) {
-        arr[i].likes = Math.max(0, (arr[i].likes || 0) + deltaLike);
-        arr[i].dislikes = Math.max(0, (arr[i].dislikes || 0) + deltaDislike);
-        break;
+  /** 点赞/点踩（4 点为界、可撤销/切换）—— 本地即时更新数字与按钮态 */
+  async function reactToFish(id: string, value: 1 | -1) {
+    try {
+      const resp = await fetch('/api/reaction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fishId: id, value }),
+      });
+      const j = await resp.json();
+
+      if (!resp.ok || !j?.ok) {
+        // 静默失败
+        return;
       }
+
+      // j.state: -1 | 0 | 1（0 表示撤销）
+      // j.likes / j.dislikes 为该鱼的最新聚合数
+      setMyVotes(prev => ({ ...prev, [id]: j.state as -1 | 0 | 1 }));
+
+      // 同步到 pondFish（用于触发重渲染）：
+      setPondFish(prev =>
+        prev.map(f => (f.id === id ? { ...f, likes: j.likes, dislikes: j.dislikes } : f))
+      );
+
+      // 同步到 spritesRef（画布即时显示）
+      const s = spritesRef.current.find(x => x.id === id);
+      if (s) {
+        s.likes = j.likes;
+        s.dislikes = j.dislikes;
+      }
+    } catch {
+      // 忽略
     }
-    setPondFish((prev) => prev.map(f => {
-      if (f.id !== id) return f;
-      return {
-        ...f,
-        likes: Math.max(0, (f.likes || 0) + deltaLike),
-        dislikes: Math.max(0, (f.dislikes || 0) + deltaDislike),
-      };
-    }));
-  }
-  function setLocalVote(id: string, v: VoteType) {
-    setVoteMap((m) => {
-      const nm = { ...m, [id]: v };
-      return nm;
-    });
-  }
-
-  async function likeFish(id: string) {
-    const cur = voteMapRef.current[id] || null;
-    // 乐观路径
-    if (cur === 'LIKE') {
-      mutateSpriteCount(id, -1, 0);
-      setLocalVote(id, null);
-    } else if (cur === 'DISLIKE') {
-      mutateSpriteCount(id, +1, -1);
-      setLocalVote(id, 'LIKE');
-    } else {
-      mutateSpriteCount(id, +1, 0);
-      setLocalVote(id, 'LIKE');
-    }
-
-    // 后端同步（失败时不回滚，下一次刷新会被校正）
-    try { await fetch(`/api/fish/${id}/like`, { method: 'POST' }); } catch {}
-  }
-
-  async function dislikeFish(id: string) {
-    const cur = voteMapRef.current[id] || null;
-    // 乐观路径
-    if (cur === 'DISLIKE') {
-      mutateSpriteCount(id, 0, -1);
-      setLocalVote(id, null);
-    } else if (cur === 'LIKE') {
-      mutateSpriteCount(id, -1, +1);
-      setLocalVote(id, 'DISLIKE');
-    } else {
-      mutateSpriteCount(id, 0, +1);
-      setLocalVote(id, 'DISLIKE');
-    }
-
-    // 后端同步（失败时不回滚，下一次刷新会被校正）
-    try { await fetch(`/api/fish/${id}/dislike`, { method: 'POST' }); } catch {}
   }
 
   // —— 全局无感刷新：当其他用户放鱼/钓鱼时，定时刷新（同时提供给公告栏一个全局事件） —— //
@@ -772,33 +729,17 @@ export default function PondClient() {
       const d = Math.floor(ageMs / 86400000);
       const h = Math.floor(ageMs / 3600000) % 24;
       const m = Math.floor(ageMs / 60000) % 60;
-
-      // 锁定后使用 anchor 坐标，不随鼠标继续移动
-      const anchor = hoverAnchorRef.current;
-      const px = Math.round((hoverLock && anchor ? anchor.x : hovered.x) + 12);
-      const py = Math.round((hoverLock && anchor ? anchor.y : hovered.y) + 12);
-
-      const myVote = voteMap[s.id] || null;
-      const liked = myVote === 'LIKE';
-      const disliked = myVote === 'DISLIKE';
+      const my = myVotes[s.id] ?? 0;
 
       hoverCard = (
         <div
-          onMouseEnter={() => {
-            setHoverLock(true);
-            if (!hoverAnchorRef.current) {
-              hoverAnchorRef.current = { x: hovered.x, y: hovered.y };
-            }
-          }}
-          onMouseLeave={() => {
-            setHoverLock(false);
-            hoverAnchorRef.current = null;
-          }}
+          onMouseEnter={() => setHoverLock(true)}
+          onMouseLeave={() => setHoverLock(false)}
           style={{
             position: 'fixed',
-            left: px,
-            top: py,
-            background: 'rgba(0,0,0,.88)',
+            left: Math.round(hovered.x + 12),
+            top: Math.round(hovered.y + 12),
+            background: 'rgba(0,0,0,.86)',
             color: '#fff',
             padding: '8px 10px',
             borderRadius: 8,
@@ -807,33 +748,23 @@ export default function PondClient() {
             zIndex: 2000,
             boxShadow: '0 6px 18px rgba(0,0,0,.3)',
             border: '1px solid rgba(255,255,255,.15)',
-            minWidth: 180,
           }}
         >
-          <div style={{ marginBottom: 4 }}>作者：{s.owner_name}</div>
-          <div style={{ marginBottom: 4 }}>名字：{s.name}</div>
+          <div>作者：{s.owner_name}</div>
+          <div>名字：{s.name}</div>
           <div>已存活：{d}天{h}小时{m}分</div>
-
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
             <button
-              className="ghost"
-              onClick={(e) => { e.stopPropagation(); likeFish(s.id); }}
-              style={{
-                borderColor: liked ? '#ffd166' : undefined,
-                background: liked ? 'rgba(255,209,102,.15)' : undefined
-              }}
-              title={liked ? '再次点击取消点赞' : '点赞'}
+              className={my === 1 ? 'primary' : 'ghost'}
+              style={{ cursor: 'pointer' }}
+              onClick={() => reactToFish(s.id, 1)}
             >
               👍 {s.likes}
             </button>
             <button
-              className="ghost"
-              onClick={(e) => { e.stopPropagation(); dislikeFish(s.id); }}
-              style={{
-                borderColor: disliked ? '#ff6b6b' : undefined,
-                background: disliked ? 'rgba(255,107,107,.15)' : undefined
-              }}
-              title={disliked ? '再次点击取消点踩' : '点踩'}
+              className={my === -1 ? 'danger' : 'ghost'}
+              style={{ cursor: 'pointer' }}
+              onClick={() => reactToFish(s.id, -1)}
             >
               👎 {s.dislikes}
             </button>
@@ -997,16 +928,7 @@ export default function PondClient() {
   );
 }
 
-/** —— 当天 key：北京时间 4 点为边界 —— */
-function localVoteKey() {
-  const d = dayBoundary4AM();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `fish_votes:${y}${m}${dd}`;
-}
-
-/** 本地时间每天 4:00 为边界：若当前时间早于 4 点，则用昨日 4 点 */
+/** 本地时间每天 4:00 为边界：若当前时间早于 4 点，则用昨日 4 点（当前文件未直接用，可留作工具函数） */
 function dayBoundary4AM(): Date {
   const now = new Date();
   const boundary = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 4, 0, 0, 0);
