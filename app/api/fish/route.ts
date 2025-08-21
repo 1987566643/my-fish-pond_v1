@@ -2,24 +2,46 @@ import { NextResponse } from 'next/server';
 import { getSession } from '../../../lib/auth';
 import { sql } from '../../../lib/db';
 
-// GET /api/fish
-// 返回池塘里的所有鱼（包含点赞 / 点踩数）
+const DAY_KEY_SQL = `((now() at time zone 'Asia/Shanghai') - interval '4 hours')::date`;
+
 export async function GET() {
+  const session = await getSession();
   try {
-    const { rows } = await sql/*sql*/`
-      SELECT f.id, f.name, f.data_url, f.w, f.h,
-             f.in_pond, f.created_at,
-             f.likes, f.dislikes,
-             u.username AS owner_username
-      FROM fish f
-      JOIN users u ON u.id = f.owner_id
-      WHERE f.in_pond = TRUE
-      ORDER BY f.created_at DESC
-    `;
-    return NextResponse.json({ fish: rows });
-  } catch (err) {
-    console.error('GET /api/fish error', err);
-    return NextResponse.json({ error: 'internal_error' }, { status: 500 });
+    // 有登录：把我的当天投票也带出来；没登录：my_vote 恒为 null
+    if (session) {
+      const { rows } = await sql/*sql*/`
+        SELECT
+          f.id, f.name, f.data_url, f.w, f.h, f.created_at,
+          f.likes, f.dislikes,
+          u.username AS owner_name,
+          r.value AS my_vote
+        FROM fish f
+        JOIN users u ON u.id = f.owner_id
+        LEFT JOIN reactions r
+          ON r.fish_id = f.id
+         AND r.user_id = ${session.id}
+         AND r.day_key = ${sql/*sql*/`${DAY_KEY_SQL}`}
+        WHERE f.in_pond = TRUE
+        ORDER BY f.created_at ASC
+      `;
+      return NextResponse.json({ ok: true, fish: rows });
+    } else {
+      const { rows } = await sql/*sql*/`
+        SELECT
+          f.id, f.name, f.data_url, f.w, f.h, f.created_at,
+          f.likes, f.dislikes,
+          u.username AS owner_name,
+          NULL::smallint AS my_vote
+        FROM fish f
+        JOIN users u ON u.id = f.owner_id
+        WHERE f.in_pond = TRUE
+        ORDER BY f.created_at ASC
+      `;
+      return NextResponse.json({ ok: true, fish: rows });
+    }
+  } catch (e) {
+    console.error('GET /api/fish failed', e);
+    return NextResponse.json({ error: 'server' }, { status: 500 });
   }
 }
 
