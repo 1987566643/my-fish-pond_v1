@@ -15,16 +15,27 @@ export async function GET(req: Request) {
   const token = url.searchParams.get('token') || '';
   const isVercelCron = req.headers.get('x-vercel-cron') !== null;
 
+  // 鉴权：优先允许 Vercel Cron；否则要求 ?token=CRON_SECRET
   if (!isVercelCron) {
     if (!TOKEN || token !== TOKEN) return bad();
   }
 
   try {
+    // 清零“今日收获”
     await sql/*sql*/`
-      UPDATE users
-      SET today_catch = 0,
-          today_catch_reset_at = now()
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'today_catch_reset_at'
+      ) THEN
+        UPDATE users SET today_catch = 0, today_catch_reset_at = now();
+      ELSE
+        UPDATE users SET today_catch = 0;
+      END IF;
+    END $$;
     `;
+
     return ok();
   } catch (e) {
     console.error('reset-today-catch failed', e);
