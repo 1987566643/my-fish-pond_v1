@@ -6,36 +6,29 @@ const TOKEN = process.env.CRON_SECRET || '';
 function ok(data: any = { ok: true }) {
   return NextResponse.json(data, { status: 200 });
 }
-function bad(msg = 'forbidden') {
+function noauth(msg = 'forbidden') {
   return NextResponse.json({ error: msg }, { status: 403 });
 }
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const token = url.searchParams.get('token') || '';
-  const isVercelCron = req.headers.get('x-vercel-cron') !== null;
 
-  // 鉴权：优先允许 Vercel Cron；否则要求 ?token=CRON_SECRET
-  if (!isVercelCron) {
-    if (!TOKEN || token !== TOKEN) return bad();
+  // 允许两种“这是 Vercel Cron”的判断之一：
+  const hasCronHeader = req.headers.get('x-vercel-cron') !== null; // 标准做法
+  const ua = req.headers.get('user-agent') || '';
+  const looksLikeVercelCron = /^vercel-cron\//i.test(ua);          // 兜底：从 UA 判断
+
+  // 鉴权：Vercel Cron（header 或 UA 命中）直接放行；否则需要 ?token=CRON_SECRET
+  if (!(hasCronHeader || looksLikeVercelCron)) {
+    if (!TOKEN || token !== TOKEN) return noauth();
   }
 
   try {
-    // 清零“今日收获”
     await sql/*sql*/`
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'users' AND column_name = 'today_catch_reset_at'
-      ) THEN
-        UPDATE users SET today_catch = 0, today_catch_reset_at = now();
-      ELSE
-        UPDATE users SET today_catch = 0;
-      END IF;
-    END $$;
+      UPDATE users
+      SET today_catch = 0
     `;
-
     return ok();
   } catch (e) {
     console.error('reset-today-catch failed', e);
@@ -43,4 +36,5 @@ export async function GET(req: Request) {
   }
 }
 
+// 允许 POST 也触发（兼容手动调用）
 export const POST = GET;
