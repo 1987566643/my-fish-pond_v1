@@ -2,9 +2,6 @@ import { NextResponse } from 'next/server';
 import { getSession } from '../../../lib/auth';
 import { sql } from '../../../lib/db';
 
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
-
 // GET /api/fish
 // 返回池塘里的所有鱼（包含点赞 / 点踩数）
 export async function GET() {
