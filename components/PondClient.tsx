@@ -785,7 +785,7 @@ export default function PondClient() {
               }}
               title={liked ? '取消点赞' : '点赞'}
             >
-              👍 {s.likes}
+              {liked ? '取消点赞' : '点赞'} &nbsp;👍 {s.likes}
             </button>
             <button
               className="ghost"
@@ -796,7 +796,7 @@ export default function PondClient() {
               }}
               title={disliked ? '取消点踩' : '点踩'}
             >
-              👎 {s.dislikes}
+               {disliked ? '取消点踩' : '点踩'} &nbsp;👎 {s.dislikes}
             </button>
           </div>
         </div>
