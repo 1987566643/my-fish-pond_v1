@@ -107,14 +107,21 @@ export default function PondClient() {
   useEffect(() => { colorRef.current = currentColor; }, [currentColor]);
   useEffect(() => { brushRef.current = brush; }, [brush]);
 
-  /** 钓鱼状态 */
+   /** 钓鱼状态 */
   const [armed, setArmed] = useState(false);
   const fishingRef = useRef({
     hasHook: false,
     x: 0,
     y: 0,
-    biteRadius: 20,
+    biteRadius: 16,      // 基础半径，稍微缩小
     caughtId: null as null | string,
+  
+    // 新增判定相关
+    holdMsRequired: 380, // 需要持续停留≥这段时间才算真咬
+    lastAttemptAt: 0,    // 最近一次判定时间戳（ms）
+    cooldownMs: 1500,    // 同一条鱼失败后的冷却
+    candidateId: null as null | string, // 正在“观望”的那条鱼
+    candidateStart: 0,   // 进入判定区的起始时间戳
   });
 
   /** 从后端刷新当前池塘鱼和“今日收获数” */
