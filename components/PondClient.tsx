@@ -108,7 +108,6 @@ export default function PondClient() {
   useEffect(() => { brushRef.current = brush; }, [brush]);
 
   /** 钓鱼状态 */
-  const [armed, setArmed] = useState(false);
   const fishingRef = useRef({
     hasHook: false,
     x: 0,
@@ -116,6 +115,29 @@ export default function PondClient() {
     biteRadius: 20,
     caughtId: null as null | string,
   });
+  
+  /** 在池塘中随机抛下鱼钩（无需用户点击） */
+  function dropHookRandom() {
+    const cvs = pondRef.current;
+    if (!cvs) return;
+    const rect = cvs.getBoundingClientRect();
+  
+    // 给边缘留一点安全距离，顶部再多留出 40px（避免钓线太短）
+    const margin = 50;
+    const topSafe = 40;
+  
+    const x = Math.random() * (rect.width - margin * 2) + margin;
+    const y = Math.random() * (rect.height - margin * 2 - topSafe) + margin + topSafe;
+  
+    fishingRef.current = {
+      ...fishingRef.current,
+      hasHook: true,
+      x,
+      y,
+      caughtId: null,
+    };
+  }
+
 
   /** 从后端刷新当前池塘鱼和“今日收获数” */
   async function refreshAll() {
@@ -624,22 +646,22 @@ export default function PondClient() {
     };
   }, [hovered, hoverLock]); // hovered 变化时也让帧里拿到最新 hover id
 
-  /** 放下鱼钩 */
-  function armToggle() {
-    setArmed((a) => !a);
-  }
-  function onPondClick(e: React.MouseEvent<HTMLCanvasElement>) {
-    if (!armed) return;
-    const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
-    fishingRef.current = {
-      ...fishingRef.current,
-      hasHook: true,
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-      caughtId: null,
-    };
-    setArmed(false);
-  }
+  // /** 放下鱼钩 */
+  // function armToggle() {
+  //   setArmed((a) => !a);
+  // }
+  // function onPondClick(e: React.MouseEvent<HTMLCanvasElement>) {
+  //   if (!armed) return;
+  //   const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
+  //   fishingRef.current = {
+  //     ...fishingRef.current,
+  //     hasHook: true,
+  //     x: e.clientX - rect.left,
+  //     y: e.clientY - rect.top,
+  //     caughtId: null,
+  //   };
+  //   setArmed(false);
+  // }
 
   /** 收钩（若已咬住则尝试 /api/catch） */
   async function reelUp() {
@@ -844,9 +866,10 @@ export default function PondClient() {
         >
           🎨 画鱼
         </button>
-        <button className="ghost" onClick={armToggle}>
-          {armed ? '✅ 点击池塘放下鱼钩' : '🎯 放下鱼钩'}
+        <button className="ghost" onClick={dropHookRandom}>
+          🎯 随机抛下鱼钩
         </button>
+
         <button className="ghost" onClick={reelUp}>
           ⏫ 收回鱼钩
         </button>
@@ -856,24 +879,9 @@ export default function PondClient() {
       </header>
 
       <div style={{ position: 'relative', height: '70dvh' }}>
-        <canvas ref={pondRef} onClick={onPondClick} style={{ width: '100%', height: '100%', display: 'block' }} />
-        {armed && (
-          <div
-            style={{
-              position: 'absolute',
-              top: 10,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              padding: '6px 10px',
-              fontSize: 13,
-              borderRadius: 999,
-              background: 'rgba(0,0,0,.35)',
-            }}
-          >
-            点击池塘任意位置放下鱼钩
-          </div>
-        )}
+        <canvas ref={pondRef} style={{ width: '100%', height: '100%', display: 'block' }} />
       </div>
+
 
       {/* 画鱼对话框 */}
       <dialog
