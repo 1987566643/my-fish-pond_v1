@@ -6,10 +6,10 @@ import { sql } from '../../../lib/db';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-/** 计算“北京时间 4:00”为界的一天窗口，返回 ISO 字符串（UTC） */
+/** 计算“北京时间 4:00”为日界，返回 ISO（UTC）字符串，避免把 Date 直接传 SQL */
 function bj4WindowISO() {
   const now = new Date();
-  // 用北京时区来计算当天 4:00
+  // 用北京时区时间来确定当天 4:00
   const bjNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
   const start = new Date(bjNow);
   start.setHours(4, 0, 0, 0);
@@ -18,11 +18,7 @@ function bj4WindowISO() {
   }
   const end = new Date(start);
   end.setDate(end.getDate() + 1);
-
-  // 转成 ISO 字符串传给数据库
-  const startISO = start.toISOString();
-  const endISO = end.toISOString();
-  return { startISO, endISO };
+  return { startISO: start.toISOString(), endISO: end.toISOString() };
 }
 
 export async function POST(req: Request) {
@@ -33,26 +29,26 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => ({} as any));
   const fishId = String(body.fishId || '');
-  const v = Number(body.value);
-  if (!fishId || (v !== 1 && v !== -1)) {
+  const rawVal = Number(body.value);
+  if (!fishId || (rawVal !== 1 && rawVal !== -1)) {
     return NextResponse.json({ ok: false, error: 'bad_request' }, { status: 400 });
   }
-  const value = v as 1 | -1;
+  const value = rawVal as 1 | -1;
 
   const { startISO, endISO } = bj4WindowISO();
 
   try {
-    // 可选：校验鱼是否存在
+    // 可选校验：鱼是否存在（不改钓鱼逻辑，只是防呆）
     const chk = await sql/*sql*/`
-      SELECT id FROM fish WHERE id = ${fishId} LIMIT 1
+      SELECT 1 FROM fish WHERE id = ${fishId} LIMIT 1
     `;
     if (chk.rowCount === 0) {
       return NextResponse.json({ ok: false, error: 'not_found' }, { status: 404 });
     }
 
-    // 查出今天是否已有一条该用户对该鱼的投票
+    // 找到“今天我对这条鱼”的上一条记录（注意：不选 id，避免你表没有该列）
     const prev = await sql/*sql*/`
-      SELECT id, value
+      SELECT value
       FROM reactions
       WHERE user_id = ${session.id}
         AND fish_id = ${fishId}
@@ -61,9 +57,9 @@ export async function POST(req: Request) {
       ORDER BY created_at DESC
       LIMIT 1
     `;
-    const prevRow = prev.rows[0] as { id: string; value: 1 | -1 } | undefined;
+    const prevValue: 1 | -1 | undefined = prev.rows[0]?.value;
 
-    // 先删，确保“每天最多一条”幂等
+    // 先删掉今天该用户对这条鱼的记录 → 保证“每天最多一条”（幂等）
     await sql/*sql*/`
       DELETE FROM reactions
       WHERE user_id = ${session.id}
@@ -72,10 +68,9 @@ export async function POST(req: Request) {
         AND created_at <  ${endISO}
     `;
 
-    // 如果和上一次相同 → 本次点击视为“取消”（不插入）
-    // 如果不同或之前没有 → 插入新的这条
+    // 如果和上次相同 → 本次是“取消”，不插入；否则插入新选择
     let my_vote: 1 | -1 | null = null;
-    if (!prevRow || prevRow.value !== value) {
+    if (prevValue !== value) {
       await sql/*sql*/`
         INSERT INTO reactions (user_id, fish_id, value)
         VALUES (${session.id}, ${fishId}, ${value})
@@ -85,7 +80,7 @@ export async function POST(req: Request) {
       my_vote = null; // 取消
     }
 
-    // 聚合全时段的 likes/dislikes（便于做排行榜）
+    // 汇总整条鱼的总点赞/点踩（全历史，用于排行榜）
     const agg = await sql/*sql*/`
       SELECT
         COALESCE(SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END), 0)::int AS likes,
@@ -98,6 +93,8 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true, likes, dislikes, my_vote });
   } catch (e) {
+    // 控制台能看到具体 SQL 报错，前端拿到 500
+    console.error('POST /api/reaction failed', e);
     return NextResponse.json({ ok: false, error: 'server_error' }, { status: 500 });
   }
 }
