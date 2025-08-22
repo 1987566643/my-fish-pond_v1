@@ -5,6 +5,7 @@ import { sql } from '../../../lib/db';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+/** 读取计数（后端为准） */
 export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -23,6 +24,7 @@ export async function GET() {
   }
 }
 
+/** 钓鱼：成功则 +1 到 today_catch & total_catch */
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
@@ -33,77 +35,67 @@ export async function POST(req: Request) {
   if (!fishId) return NextResponse.json({ ok: false, error: 'missing_fish_id' }, { status: 400 });
 
   try {
-    await sql.begin(async (trx) => {
-      // 1) 锁住这条鱼，确认仍在池塘
-      const { rows } = await trx/*sql*/`
-        SELECT id, owner_id, name, in_pond
-        FROM fish
-        WHERE id = ${fishId}
-        FOR UPDATE
+    // 1) 原子“收钩”：只在 in_pond=TRUE 时更新成功
+    const { rows: upd } = await sql/*sql*/`
+      UPDATE fish
+      SET in_pond = FALSE
+      WHERE id = ${fishId} AND in_pond = TRUE
+      RETURNING id, owner_id, name
+    `;
+    if (upd.length === 0) {
+      // 要么被别人先钓走，要么本就不在池塘
+      return NextResponse.json({ ok: false, reason: 'already_caught' }, { status: 409 });
+    }
+
+    const fish = upd[0] as { id: string; owner_id: string; name: string };
+
+    // 2) catches 记录（可选，失败不影响主流程）
+    try {
+      await sql/*sql*/`
+        INSERT INTO catches (fish_id, angler_id, released, created_at)
+        VALUES (${fish.id}, ${session.id}, FALSE, NOW())
       `;
-      if (rows.length === 0) {
-        throw Object.assign(new Error('not_found'), { status: 404 });
-      }
-      const fish = rows[0] as { id: string; owner_id: string; name: string; in_pond: boolean };
-      if (!fish.in_pond) {
-        throw Object.assign(new Error('already_caught'), { status: 409 });
-      }
+    } catch {
+      // 忽略（比如表结构/约束不一致）
+    }
 
-      // 2) 真正的“收钩”：从池塘移除
-      await trx/*sql*/`
-        UPDATE fish
-        SET in_pond = FALSE
-        WHERE id = ${fishId}
-      `;
-
-      // 3) 记到 catches（可选：有 created_at 兜底）
-      try {
-        await trx/*sql*/`
-          INSERT INTO catches (fish_id, angler_id, released, created_at)
-          VALUES (${fishId}, ${session.id}, FALSE, NOW())
-        `;
-      } catch {
-        // 表/列不存在就忽略，别让主流程失败
-      }
-
-      // 4) 用户计数 +1（必要，但一般不会报错）
-      await trx/*sql*/`
+    // 3) 计数 +1（一般不会失败）
+    try {
+      await sql/*sql*/`
         UPDATE users
         SET today_catch = today_catch + 1,
             total_catch = total_catch + 1
         WHERE id = ${session.id}
       `;
+    } catch {
+      // 极端情况下也不要回滚主流程
+    }
 
-      // 5) 公告（可选：不同项目的枚举有差异，这里兜底）
-      try {
-        // ⚠️ 如果你的 pond_events.type 枚举不是 'CATCH'，改成你库里已有的那个（比如 'TAKE'）
-        await trx/*sql*/`
-          INSERT INTO pond_events (
-            type, actor_id, target_fish_id, target_owner_id,
-            fish_name, owner_username, actor_username, created_at
-          )
-          VALUES (
-            'CATCH',
-            ${session.id},
-            ${fish.id},
-            ${fish.owner_id},
-            ${fish.name},
-            (SELECT username FROM users WHERE id = ${fish.owner_id}),
-            (SELECT username FROM users WHERE id = ${session.id}),
-            NOW()
-          )
-        `;
-      } catch {
-        // 如果枚举/列不匹配就忽略，不影响收钩结果
-      }
-    });
+    // 4) 公告（可选，枚举不匹配也忽略）
+    try {
+      // 如果你的枚举不是 'CATCH'，改成库里已有的值（如 'TAKE'）
+      await sql/*sql*/`
+        INSERT INTO pond_events (
+          type, actor_id, target_fish_id, target_owner_id,
+          fish_name, owner_username, actor_username, created_at
+        )
+        VALUES (
+          'CATCH',
+          ${session.id},
+          ${fish.id},
+          ${fish.owner_id},
+          ${fish.name},
+          (SELECT username FROM users WHERE id = ${fish.owner_id}),
+          (SELECT username FROM users WHERE id = ${session.id}),
+          NOW()
+        )
+      `;
+    } catch {
+      // 忽略公告失败
+    }
 
     return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    const status = e?.status ?? 500;
-    if (status === 404 || status === 409) {
-      return NextResponse.json({ ok: false, reason: e.message || 'conflict' }, { status });
-    }
+  } catch {
     return NextResponse.json({ ok: false, error: 'server' }, { status: 500 });
   }
 }
