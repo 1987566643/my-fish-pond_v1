@@ -107,21 +107,14 @@ export default function PondClient() {
   useEffect(() => { colorRef.current = currentColor; }, [currentColor]);
   useEffect(() => { brushRef.current = brush; }, [brush]);
 
-   /** 钓鱼状态 */
+  /** 钓鱼状态 */
   const [armed, setArmed] = useState(false);
   const fishingRef = useRef({
     hasHook: false,
     x: 0,
     y: 0,
-    biteRadius: 16,      // 基础半径，稍微缩小
+    biteRadius: 20,
     caughtId: null as null | string,
-  
-    // 新增判定相关
-    holdMsRequired: 380, // 需要持续停留≥这段时间才算真咬
-    lastAttemptAt: 0,    // 最近一次判定时间戳（ms）
-    cooldownMs: 1500,    // 同一条鱼失败后的冷却
-    candidateId: null as null | string, // 正在“观望”的那条鱼
-    candidateStart: 0,   // 进入判定区的起始时间戳
   });
 
   /** 从后端刷新当前池塘鱼和“今日收获数” */
@@ -497,97 +490,26 @@ export default function PondClient() {
       drawHookIcon(ctx2, f.x, f.y, size);
 
       // 命中判定
-      const fref = fishingRef.current;
-      if (!fref.caughtId) {
-        const now = performance.now();
-        const HOOK_UP_VEC = { x: 0, y: -1 }; // 鱼钩朝向“上”
-      
-        // 一个小工具：计算向量夹角的余弦值
-        const cosBetween = (ax:number, ay:number, bx:number, by:number) => {
-          const la = Math.hypot(ax, ay) || 1;
-          const lb = Math.hypot(bx, by) || 1;
-          return (ax * bx + ay * by) / (la * lb);
-        };
-      
-        // 遍历所有鱼，挑出“最有可能咬钩”的一条
-        let bestId: string | null = null;
-        let bestScore = -1;
-      
+      if (!f.caughtId) {
         for (let i = 0; i < spritesRef.current.length; i++) {
           const s = spritesRef.current[i];
-      
-          // 鱼嘴位置（你代码里已有的估算方式）
           const mouthX = s.x + Math.cos(s.angle) * (s.w * 0.52);
           const mouthY = s.y + Math.sin(s.angle) * (s.h * 0.18);
-          const dist = Math.hypot(mouthX - fref.x, mouthY - fref.y);
-      
-          // 命中半径：随鱼尺寸线性放大，但整体更严格
-          const sizeK = Math.max(s.w, s.h) * 0.05; // 尺寸系数（可调）
-          const radius = Math.max(10, fref.biteRadius + sizeK - 6);
-      
-          if (dist > radius) continue; // 距离不满足
-      
-          // 角度约束：鱼的朝向与鱼钩朝向夹角需小（cos值越接近1越同向）
-          const fishDir = { x: Math.cos(s.angle), y: Math.sin(s.angle) };
-          const cos = cosBetween(fishDir.x, fishDir.y, HOOK_UP_VEC.x, HOOK_UP_VEC.y);
-          if (cos < 0.75) continue; // 约等于 < ~41° 就淘汰（数值可调）
-      
-          // 速度约束：速度太快，不容易中钩
-          if (s.speed > 48) continue; // 可调上限
-      
-          // 打分：越近、角度越准、越慢，得分越高
-          const score = (1 - dist / radius) * 0.6 + ((cos - 0.75) / (1 - 0.75)) * 0.3 + (1 - Math.min(1, s.speed / 48)) * 0.1;
-          if (score > bestScore) {
-            bestScore = score;
-            bestId = s.id;
-          }
-        }
-      
-        // 若当前没有合格候选，清空候选状态
-        if (!bestId) {
-          fishingRef.current.candidateId = null;
-          fishingRef.current.candidateStart = 0;
-          return;
-        }
-      
-        // 冷却：避免同一条鱼频繁尝试
-        if (now - fref.lastAttemptAt < fref.cooldownMs && fref.candidateId !== bestId) {
-          return;
-        }
-      
-        // 保持在判定区内的时长判定
-        if (fref.candidateId !== bestId) {
-          // 换了新的候选，重新计时
-          fishingRef.current.candidateId = bestId;
-          fishingRef.current.candidateStart = now;
-          return;
-        } else {
-          // 同一条候选持续停留
-          const held = now - fref.candidateStart;
-          if (held < fref.holdMsRequired) return;
-        }
-      
-        // 通过时长判定后，加一点随机性降低成功率（比如 45%）
-        if (Math.random() < 0.45) {
-          const s = spritesRef.current.find(x => x.id === bestId);
-          if (s) {
+          const d = Math.hypot(mouthX - f.x, mouthY - f.y);
+          if (d <= f.biteRadius) {
             s.caught = true;
-            s.x = fref.x;
-            s.y = fref.y;
+            s.x = f.x;
+            s.y = f.y;
             fishingRef.current.caughtId = s.id;
-            fishingRef.current.lastAttemptAt = now;
+            break;
           }
-        } else {
-          // 这次“尝一口没咬住”，进入冷却
-          fishingRef.current.lastAttemptAt = now;
-          fishingRef.current.candidateStart = now; // 重置停留计时
         }
       } else {
-        // 已咬住：在钩子附近微抖（保持你原来的实现即可）
-        const s = spritesRef.current.find((x) => x.id === fref.caughtId);
+        // 已咬住：在钩子附近微抖
+        const s = spritesRef.current.find((x) => x.id === f.caughtId);
         if (s) {
-          s.x = fref.x + Math.sin(performance.now() / 120) * 1.2;
-          s.y = fref.y + Math.cos(performance.now() / 150) * 1.2;
+          s.x = f.x + Math.sin(performance.now() / 120) * 1.2;
+          s.y = f.y + Math.cos(performance.now() / 150) * 1.2;
         }
       }
     }
