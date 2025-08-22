@@ -764,34 +764,44 @@ export default function PondClient() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fishId: id, value }),
       });
-      const j = await res.json();
   
-      if (!res.ok || !j?.ok) return; // 失败就保持原样
+      // 可能返回 { ok:true, likes:number, dislikes:number, my_vote: 1 | -1 | null }
+      const j = await res.json().catch(() => null);
+      if (!res.ok || !j?.ok) return;
   
-      const { likes, dislikes, my_vote } = j as { likes: number; dislikes: number; my_vote: 1 | -1 | null };
+      const { likes, dislikes, my_vote } = j as {
+        likes: number; dislikes: number; my_vote: 1 | -1 | null;
+      };
   
-      // ① 更新画面里的精灵（悬浮卡再次出现会从这里读）
+      // ① 更新画布里的精灵（悬浮卡读取的是这里的数据）
       const s = spritesRef.current.find(x => x.id === id);
       if (s) {
         s.likes = likes;
         s.dislikes = dislikes;
+        s.my_vote = (my_vote === 1 || my_vote === -1) ? my_vote : null;
       }
   
-      // ② 更新列表状态（rebuildSprites 时会把 likes/dislikes 带过去）
+      // ② 更新列表状态（rebuildSprites 会把这些字段合并回去）
       setPondFish(prev =>
-        prev.map(f => (f.id === id ? { ...f, likes, dislikes } : f))
+        prev.map(f => f.id === id ? {
+          ...f,
+          likes,
+          dislikes,
+          my_vote: (my_vote === 1 || my_vote === -1) ? my_vote : null,
+        } : f)
       );
   
-      // ③（可选）如果你在悬浮卡上渲染了“我是否点赞”的图标，这里也可以顺手存一份
-      //    例如给 sprite 加 myVote，或在一个 map 里记住 my_vote
+      // ③ 若此刻正在显示该鱼的悬浮卡，推动一次重渲染，确保 title/高亮立刻切换
+      if (hovered && hovered.id === id) {
+        setHovered({ ...hovered });
+      }
   
-      // ④ 为了避免“立即刷新覆盖回旧值”的闪烁，给 refresh 加一点点延时
-      //    （如果后端已是全历史聚合，其实立即刷新也不会回到 0 了）
+      // ④ 轻微延迟刷新，避免后端尚未聚合时把数值抖回旧值
       setTimeout(() => {
         refreshAll().catch(() => {});
       }, 400);
     } catch {
-      // 忽略错误，维持当前 UI
+      // 静默失败
     }
   }
 
