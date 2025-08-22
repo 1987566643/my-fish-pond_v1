@@ -5,6 +5,7 @@ import { sql } from '../../../lib/db';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+/** 我钓到的鱼（用于“我的”右侧列表） */
 export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -15,22 +16,17 @@ export async function GET() {
         c.id AS catch_id,
         f.id AS fish_id,
         f.name,
-        f.data_url,
-        f.w, f.h,
-        u.username AS owner_username,
-        c.caught_at
+        ou.username AS owner_username,
+        f.data_url, f.w, f.h,
+        c.created_at AS caught_at
       FROM catches c
       JOIN fish f ON f.id = c.fish_id
-      JOIN users u ON u.id = f.owner_id
+      JOIN users ou ON ou.id = f.owner_id
       WHERE c.angler_id = ${session.id}
-        AND c.released = FALSE               -- 关键：只看未放回
-        AND f.in_pond = FALSE                -- 兜底：防止旧数据
-      ORDER BY c.caught_at DESC
-      LIMIT 500
+      ORDER BY c.created_at DESC
     `;
     return NextResponse.json({ ok: true, fish: rows });
-  } catch (e) {
+  } catch {
     return NextResponse.json({ error: 'server' }, { status: 500 });
   }
 }
-
