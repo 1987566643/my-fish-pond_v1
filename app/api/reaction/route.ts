@@ -5,14 +5,13 @@ import { sql } from '../../../lib/db';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-// 计算「北京时间 4:00」为边界的当日窗口（返回 UTC ISO）
+// 计算北京时间 4:00 为边界的当日窗口（返回 UTC ISO）
 function bj4Window() {
   const now = new Date();
   const bj = new Date(now.getTime() + 8 * 3600_000);
   const day4 = new Date(bj.getFullYear(), bj.getMonth(), bj.getDate(), 4, 0, 0, 0);
   const startBJ = bj.getTime() < day4.getTime() ? new Date(day4.getTime() - 24 * 3600_000) : day4;
   const endBJ = new Date(startBJ.getTime() + 24 * 3600_000);
-  // 转回 UTC
   return {
     startISO: new Date(startBJ.getTime() - 8 * 3600_000).toISOString(),
     endISO:   new Date(endBJ.getTime() - 8 * 3600_000).toISOString(),
@@ -25,13 +24,19 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => ({}));
   const fishId = String(body.fishId || '');
-  const value: 1 | -1 = body.value === 1 ? 1 : body.value === -1 ? -1 : 0;
-  if (!fishId || !value) return NextResponse.json({ ok: false, error: 'bad_request' }, { status: 400 });
+
+  // ✅ 校验并得到严格的 1 | -1
+  let value: 1 | -1;
+  if (body.value === 1) value = 1;
+  else if (body.value === -1) value = -1;
+  else return NextResponse.json({ ok: false, error: 'bad_request' }, { status: 400 });
+
+  if (!fishId) return NextResponse.json({ ok: false, error: 'bad_request' }, { status: 400 });
 
   const { startISO, endISO } = bj4Window();
 
   try {
-    // 1) 取“今天我对这条鱼”的最新记录
+    // 1) 查“今天我对这条鱼”的最新记录
     const latest = await sql/*sql*/`
       SELECT id, value
       FROM reactions
@@ -42,14 +47,13 @@ export async function POST(req: Request) {
       ORDER BY created_at DESC
       LIMIT 1
     `;
-
     const row = latest.rows?.[0] as { id?: string; value?: number } | undefined;
 
     if (row && row.value === value) {
-      // 再点一次同值 = 取消（删除最新这一条）
+      // 同值二次点击 => 取消（删除最新一条）
       await sql/*sql*/`DELETE FROM reactions WHERE id = ${row.id}`;
     } else {
-      // 没点过 或 改主意 → 插入一条新记录
+      // 新投或改主意 => 插入新记录
       await sql/*sql*/`
         INSERT INTO reactions (fish_id, user_id, value)
         VALUES (${fishId}, ${session.id}, ${value})
@@ -67,7 +71,7 @@ export async function POST(req: Request) {
     const likes = Number(agg.rows?.[0]?.likes ?? 0);
     const dislikes = Number(agg.rows?.[0]?.dislikes ?? 0);
 
-    // 3) 取“今天我对这条鱼”的最新值作为 my_vote（可能为 null）
+    // 3) 回传今天我的最新投票作为 my_vote
     const me = await sql/*sql*/`
       SELECT value
       FROM reactions
@@ -83,7 +87,7 @@ export async function POST(req: Request) {
       me.rows?.[0]?.value === -1 ? -1 : null;
 
     return NextResponse.json({ ok: true, likes, dislikes, my_vote });
-  } catch (e) {
+  } catch {
     return NextResponse.json({ ok: false, error: 'server' }, { status: 500 });
   }
 }
