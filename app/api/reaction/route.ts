@@ -1,4 +1,3 @@
-// /app/api/reaction/route.ts
 import { NextResponse } from 'next/server';
 import { getSession } from '../../../lib/auth';
 import { sql } from '../../../lib/db';
@@ -6,53 +5,36 @@ import { sql } from '../../../lib/db';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-/** 北京时间 4:00 为“当天”边界（转成 UTC 20:00） */
-function bjDayWindow4() {
+/** —— 计算北京时间 4:00 边界（UTC ISO） —— */
+function beijing4amBoundsISO() {
   const now = new Date();
-  // 今日 UTC 20:00
-  const start = new Date(Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate(),
-    20, 0, 0, 0
-  ));
-  if (now.getTime() < start.getTime()) {
-    // 还没到 UTC20:00（北京时间 <4:00），往前一天
-    start.setUTCDate(start.getUTCDate() - 1);
-  }
-  const end = new Date(start.getTime() + 24 * 3600 * 1000);
-  return { startISO: start.toISOString(), endISO: end.toISOString() };
+  const bjNow = new Date(now.getTime() + 8 * 3600_000);
+  const y = bjNow.getUTCFullYear();
+  const m = bjNow.getUTCMonth();
+  const d = bjNow.getUTCDate();
+  let startBj = new Date(Date.UTC(y, m, d, 4, 0, 0, 0));
+  if (bjNow.getUTCHours() < 4) startBj = new Date(startBj.getTime() - 24 * 3600_000);
+  const startUtc = new Date(startBj.getTime() - 8 * 3600_000);
+  const endUtc = new Date(startUtc.getTime() + 24 * 3600_000);
+  return { startISO: startUtc.toISOString(), endISO: endUtc.toISOString() };
 }
 
-/**
- * 交互规则（不依赖 reactions.id）：
- * - 当天（北京 4 点边界）同一用户对同一条鱼最多保留 1 条记录
- * - 再点同一边 => 取消（删当日最新一条）
- * - 点另一边 => 改值（把当日最新一条的 value 改掉，并更新 created_at=now()）
- * - 返回累计 likes/dislikes（全历史）+ 我当天的 my_vote
- *
- * reactions 表假定结构（没有 id 也可）：
- *   user_id UUID, fish_id UUID, value INT CHECK (value IN (-1,1)), created_at TIMESTAMPTZ DEFAULT now()
- */
+/** 点赞/点踩：再次点击相同值 => 取消；不同值 => 切换。返回聚合计数与 my_vote。 */
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
-  let body: any;
-  try { body = await req.json(); } catch { return NextResponse.json({ error: 'bad_request' }, { status: 400 }); }
-
-  const fishId = String(body?.fishId || body?.id || '');
-  const value = Number(body?.value);
-  if (!fishId || (value !== 1 && value !== -1)) {
+  const { fishId, value } = await req.json();
+  if (!fishId || !(value === 1 || value === -1)) {
     return NextResponse.json({ error: 'bad_request' }, { status: 400 });
   }
 
-  const { startISO, endISO } = bjDayWindow4();
+  const { startISO, endISO } = beijing4amBoundsISO();
 
   try {
-    // 1) 查“今天”的最新一条记录（不用 id）
-    const existed = await sql/*sql*/`
-      SELECT value, created_at
+    // 1) 取出今天我对这条鱼的最后一次
+    const { rows: prevRows } = await sql/*sql*/`
+      SELECT id, value
       FROM reactions
       WHERE user_id = ${session.id}
         AND fish_id = ${fishId}
@@ -64,69 +46,32 @@ export async function POST(req: Request) {
 
     let myVote: 1 | -1 | null = null;
 
-    if (existed.rows.length === 0) {
-      // 没有 => 新增
+    if (prevRows.length && prevRows[0].value === value) {
+      // 2a) 与本次相同 => 取消（删除本条最新记录即可）
+      await sql/*sql*/`DELETE FROM reactions WHERE id = ${prevRows[0].id}`;
+      myVote = null;
+    } else {
+      // 2b) 不相同 => 插入新记录
       await sql/*sql*/`
         INSERT INTO reactions (user_id, fish_id, value)
         VALUES (${session.id}, ${fishId}, ${value})
       `;
-      myVote = value as 1 | -1;
-    } else {
-      const cur = (existed.rows[0] as any).value as number;
-      if (cur === value) {
-        // 同按钮 => 删除“今天”最新一条（用 ctid 精确定位）
-        await sql/*sql*/`
-          WITH target AS (
-            SELECT ctid
-            FROM reactions
-            WHERE user_id = ${session.id}
-              AND fish_id = ${fishId}
-              AND created_at >= ${startISO}
-              AND created_at <  ${endISO}
-            ORDER BY created_at DESC
-            LIMIT 1
-          )
-          DELETE FROM reactions r
-          USING target
-          WHERE r.ctid = target.ctid
-        `;
-        myVote = null;
-      } else {
-        // 另一边 => 更新“今天”最新一条的 value（同样用 ctid）
-        await sql/*sql*/`
-          WITH target AS (
-            SELECT ctid
-            FROM reactions
-            WHERE user_id = ${session.id}
-              AND fish_id = ${fishId}
-              AND created_at >= ${startISO}
-              AND created_at <  ${endISO}
-            ORDER BY created_at DESC
-            LIMIT 1
-          )
-          UPDATE reactions r
-          SET value = ${value}, created_at = NOW()
-          FROM target
-          WHERE r.ctid = target.ctid
-        `;
-        myVote = value as 1 | -1;
-      }
+      myVote = value;
     }
 
-    // 2) 聚合全历史点赞点踩
-    const agg = await sql/*sql*/`
+    // 3) 返回聚合后的总计数 + 我今天的投票
+    const { rows: agg } = await sql/*sql*/`
       SELECT
-        COALESCE(SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END), 0)::int AS likes,
-        COALESCE(SUM(CASE WHEN value =-1 THEN 1 ELSE 0 END), 0)::int AS dislikes
+        COALESCE(SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END),0)::int AS likes,
+        COALESCE(SUM(CASE WHEN value =-1 THEN 1 ELSE 0 END),0)::int AS dislikes
       FROM reactions
       WHERE fish_id = ${fishId}
     `;
-    const likes = (agg.rows[0] as any).likes as number;
-    const dislikes = (agg.rows[0] as any).dislikes as number;
+    const likes = Number(agg[0]?.likes ?? 0);
+    const dislikes = Number(agg[0]?.dislikes ?? 0);
 
     return NextResponse.json({ ok: true, likes, dislikes, my_vote: myVote });
   } catch (e) {
-    console.error('POST /api/reaction failed', e);
     return NextResponse.json({ error: 'server' }, { status: 500 });
   }
 }
