@@ -108,6 +108,7 @@ export default function PondClient() {
   useEffect(() => { brushRef.current = brush; }, [brush]);
 
   /** 钓鱼状态 */
+  const [armed, setArmed] = useState(false);
   const fishingRef = useRef({
     hasHook: false,
     x: 0,
