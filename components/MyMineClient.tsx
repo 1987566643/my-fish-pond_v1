@@ -83,17 +83,60 @@ export default function MyMineClient() {
     }
   }
 
-  // —— 订阅 SSE：别人放回/钓走/删除/放鱼 → 轻量合并“我画的鱼” —— //
+  // —— 轻量合并：“我的收获” —— //
+  async function softMergeCatches() {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+
+    try {
+      const b = await fetch('/api/my-catches', { cache: 'no-store' }).then(r => r.json()).catch(() => null);
+      if (!b?.fish) return;
+
+      const incoming: MyCatch[] = b.fish as MyCatch[];
+      const dict: Record<string, MyCatch> = Object.create(null);
+      incoming.forEach(c => { dict[c.catch_id] = c; });
+
+      setCatches(cur => {
+        const seen = new Set(cur.map(x => x.catch_id));
+        // 1) 先把“新加入的收获”按后端顺序追加到前面
+        const newOnes: MyCatch[] = [];
+        for (const it of incoming) {
+          if (!seen.has(it.catch_id)) newOnes.push(it);
+        }
+        // 2) 再把已存在的按原顺序保留，同时更新元信息（名称/图/时间）
+        const kept = cur.map(x => {
+          const newer = dict[x.catch_id];
+          return newer
+            ? { ...x,
+                name: newer.name ?? x.name,
+                data_url: newer.data_url ?? x.data_url,
+                owner_username: newer.owner_username ?? x.owner_username,
+                caught_at: newer.caught_at ?? x.caught_at,
+              }
+            : x;
+        });
+        return newOnes.concat(kept);
+      });
+    } catch {
+      // 静默
+    }
+  }
+
+  // —— 订阅 SSE：别人放回/钓走/删除/放鱼 → 轻量合并“我画的鱼”和“我的收获” —— //
   useEffect(() => {
     const es = new EventSource('/api/stream');
     let timer: any = null;
+
+    const runMerge = () => {
+      softMergeMine();
+      softMergeCatches();
+    };
 
     const onPond = () => {
       if (timer) return;
       // 120ms 防抖合并
       timer = setTimeout(() => {
         timer = null;
-        softMergeMine();
+        runMerge();
       }, 120);
     };
 
@@ -101,13 +144,18 @@ export default function MyMineClient() {
     es.onerror = () => { /* 自动重连，忽略 */ };
 
     const onVis = () => {
-      if (document.visibilityState === 'visible') softMergeMine();
+      if (document.visibilityState === 'visible') runMerge();
     };
     document.addEventListener('visibilitychange', onVis);
+
+    // 监听前端广播（PondClient 在钓鱼/放回后会发）
+    const onLocalPondRefresh = () => runMerge();
+    window.addEventListener('pond:refresh' as any, onLocalPondRefresh);
 
     return () => {
       if (timer) clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('pond:refresh' as any, onLocalPondRefresh);
       es.close();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -153,7 +201,7 @@ export default function MyMineClient() {
             body: JSON.stringify({ fishId }),
           });
           if (res.ok) {
-            // 成功后广播一次，让池塘/公告栏同步；本页不再刷新两个列表
+            // 成功后广播一次，让池塘/公告/此页都同步
             try { window.dispatchEvent(new CustomEvent('pond:refresh')); } catch {}
           }
         } catch {
