@@ -13,7 +13,7 @@ export async function POST(req: Request) {
   if (!fishId) return NextResponse.json({ ok: false, error: 'bad_request' }, { status: 400 });
 
   try {
-    // 1) 我是否持有这条鱼且未放回？
+    // 1) 我是否持有（最近一次、未放回）
     const own = await sql/*sql*/`
       SELECT c.id AS catch_id, f.owner_id, f.name
       FROM catches c
@@ -33,15 +33,11 @@ export async function POST(req: Request) {
     const ownerId = own.rows[0].owner_id as string;
     const fishName = own.rows[0].name as string;
 
-    // 2) 标记已放回 & 把鱼重新放入池塘
-    await sql/*sql*/`
-      UPDATE catches SET released = TRUE WHERE id = ${catchId}
-    `;
-    await sql/*sql*/`
-      UPDATE fish SET in_pond = TRUE WHERE id = ${fishId}
-    `;
+    // 2) 标记放回 & 鱼回池塘
+    await sql/*sql*/`UPDATE catches SET released = TRUE WHERE id = ${catchId}`;
+    await sql/*sql*/`UPDATE fish SET in_pond = TRUE WHERE id = ${fishId}`;
 
-    // 3) 公告：RELEASE（这是允许的类型）
+    // 3) 公告（允许的类型：RELEASE）
     await sql/*sql*/`
       INSERT INTO pond_events (
         type, actor_id, target_fish_id, target_owner_id,
