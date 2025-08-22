@@ -49,6 +49,14 @@ export default function MyMineClient() {
       }
     })();
   }, []);
+  async function refreshCatches() {
+      try {
+        const b = await fetch('/api/my-catches', { cache: 'no-store' }).then(r => r.json()).catch(() => null);
+        if (b?.fish) setCatches(b.fish as MyCatch[]);
+      } catch {
+        // 静默
+      }
+    }
 
   // —— 轻量合并：仅更新“我画的鱼”的状态字段；不重排，不闪烁 —— //
   async function softMergeMine() {
@@ -122,44 +130,79 @@ export default function MyMineClient() {
   }
 
   // —— 订阅 SSE：别人放回/钓走/删除/放鱼 → 轻量合并“我画的鱼”和“我的收获” —— //
+  // useEffect(() => {
+  //   const es = new EventSource('/api/stream');
+  //   let timer: any = null;
+
+  //   const runMerge = () => {
+  //     softMergeMine();
+  //     softMergeCatches();
+  //   };
+
+  //   const onPond = () => {
+  //     if (timer) return;
+  //     // 120ms 防抖合并
+  //     timer = setTimeout(() => {
+  //       timer = null;
+  //       runMerge();
+  //     }, 120);
+  //   };
+
+  //   es.addEventListener('pond', onPond);
+  //   es.onerror = () => { /* 自动重连，忽略 */ };
+
+  //   const onVis = () => {
+  //     if (document.visibilityState === 'visible') runMerge();
+  //   };
+  //   document.addEventListener('visibilitychange', onVis);
+
+  //   // 监听前端广播（PondClient 在钓鱼/放回后会发）
+  //   const onLocalPondRefresh = () => runMerge();
+  //   window.addEventListener('pond:refresh' as any, onLocalPondRefresh);
+
+  //   return () => {
+  //     if (timer) clearTimeout(timer);
+  //     document.removeEventListener('visibilitychange', onVis);
+  //     window.removeEventListener('pond:refresh' as any, onLocalPondRefresh);
+  //     es.close();
+  //   };
+  // }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const es = new EventSource('/api/stream');
-    let timer: any = null;
-
-    const runMerge = () => {
-      softMergeMine();
-      softMergeCatches();
-    };
-
-    const onPond = () => {
-      if (timer) return;
-      // 120ms 防抖合并
-      timer = setTimeout(() => {
-        timer = null;
-        runMerge();
-      }, 120);
-    };
-
-    es.addEventListener('pond', onPond);
-    es.onerror = () => { /* 自动重连，忽略 */ };
-
-    const onVis = () => {
-      if (document.visibilityState === 'visible') runMerge();
-    };
-    document.addEventListener('visibilitychange', onVis);
-
-    // 监听前端广播（PondClient 在钓鱼/放回后会发）
-    const onLocalPondRefresh = () => runMerge();
-    window.addEventListener('pond:refresh' as any, onLocalPondRefresh);
-
-    return () => {
-      if (timer) clearTimeout(timer);
-      document.removeEventListener('visibilitychange', onVis);
-      window.removeEventListener('pond:refresh' as any, onLocalPondRefresh);
-      es.close();
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
+      const es = new EventSource('/api/stream');
+      let timer: any = null;
+    
+      const onPond = () => {
+        if (timer) return;
+        timer = setTimeout(() => {
+          timer = null;
+          softMergeMine();   // 我画的鱼：轻量合并
+          refreshCatches();  // 我的收获：整表刷新
+        }, 120);
+      };
+    
+      es.addEventListener('pond', onPond);
+      es.onerror = () => { /* 自动重连，忽略 */ };
+    
+      // 页面可见时也顺手拉一次
+      const onVis = () => {
+        if (document.visibilityState === 'visible') {
+          softMergeMine();
+          refreshCatches();
+        }
+      };
+      document.addEventListener('visibilitychange', onVis);
+    
+      // 监听池塘页发的 window 事件，立即刷新“我的收获”
+      const onWindowPondRefresh = () => refreshCatches();
+      window.addEventListener('pond:refresh' as any, onWindowPondRefresh);
+    
+      return () => {
+        if (timer) clearTimeout(timer);
+        document.removeEventListener('visibilitychange', onVis);
+        window.removeEventListener('pond:refresh' as any, onWindowPondRefresh);
+        es.close();
+      };
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
   /** 删除我的鱼：纯乐观移除；不广播；失败不回滚（后端幂等） */
   function deleteMyFish(fishId: string) {
     if (pendingDelete.has(fishId)) return;
