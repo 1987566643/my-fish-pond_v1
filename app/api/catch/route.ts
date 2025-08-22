@@ -24,78 +24,62 @@ export async function GET() {
   }
 }
 
-/** 钓鱼：成功则 +1 到 today_catch & total_catch */
+/** 钓鱼：原子摘取+记录收获+计数+公告 */
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const { fishId } = await req.json();
 
-  let body: any = null;
-  try { body = await req.json(); } catch {}
-  const fishId: string | undefined = body?.fishId || body?.id;
-  if (!fishId) return NextResponse.json({ ok: false, error: 'missing_fish_id' }, { status: 400 });
+  if (!fishId) {
+    return NextResponse.json({ error: 'bad_request' }, { status: 400 });
+  }
 
   try {
-    // 1) 原子“收钩”：只在 in_pond=TRUE 时更新成功
+    // 1) 原子摘取（确保仍在池塘）
     const { rows: upd } = await sql/*sql*/`
-      UPDATE fish
-      SET in_pond = FALSE
+      UPDATE fish SET in_pond = FALSE
       WHERE id = ${fishId} AND in_pond = TRUE
       RETURNING id, owner_id, name
     `;
     if (upd.length === 0) {
-      // 要么被别人先钓走，要么本就不在池塘
       return NextResponse.json({ ok: false, reason: 'already_caught' }, { status: 409 });
     }
 
-    const fish = upd[0] as { id: string; owner_id: string; name: string };
+    const ownerId = upd[0].owner_id as string;
+    const fishName = upd[0].name as string;
 
-    // 2) catches 记录（可选，失败不影响主流程）
-    try {
-      await sql/*sql*/`
-        INSERT INTO catches (fish_id, angler_id, released, created_at)
-        VALUES (${fish.id}, ${session.id}, FALSE, NOW())
-      `;
-    } catch {
-      // 忽略（比如表结构/约束不一致）
-    }
+    // 2) 记录收获（我的收获页依赖这张表）
+    const { rows: c } = await sql/*sql*/`
+      INSERT INTO catches (fish_id, angler_id, released)
+      VALUES (${fishId}, ${session.id}, FALSE)
+      RETURNING id
+    `;
+    const catchId = c[0].id;
 
-    // 3) 计数 +1（一般不会失败）
-    try {
-      await sql/*sql*/`
-        UPDATE users
-        SET today_catch = today_catch + 1,
-            total_catch = total_catch + 1
-        WHERE id = ${session.id}
-      `;
-    } catch {
-      // 极端情况下也不要回滚主流程
-    }
+    // 3) 计数 +1
+    await sql/*sql*/`
+      UPDATE users
+      SET today_catch = today_catch + 1,
+          total_catch = total_catch + 1
+      WHERE id = ${session.id}
+    `;
 
-    // 4) 公告（可选，枚举不匹配也忽略）
-    try {
-      // 如果你的枚举不是 'CATCH'，改成库里已有的值（如 'TAKE'）
-      await sql/*sql*/`
-        INSERT INTO pond_events (
-          type, actor_id, target_fish_id, target_owner_id,
-          fish_name, owner_username, actor_username, created_at
-        )
-        VALUES (
-          'CATCH',
-          ${session.id},
-          ${fish.id},
-          ${fish.owner_id},
-          ${fish.name},
-          (SELECT username FROM users WHERE id = ${fish.owner_id}),
-          (SELECT username FROM users WHERE id = ${session.id}),
-          NOW()
-        )
-      `;
-    } catch {
-      // 忽略公告失败
-    }
+    // 4) 公告：CATCH
+    await sql/*sql*/`
+      INSERT INTO pond_events (
+        type, actor_id, target_fish_id, target_owner_id,
+        fish_name, owner_username, actor_username
+      )
+      VALUES (
+        'CATCH', ${session.id}, ${fishId}, ${ownerId},
+        ${fishName},
+        (SELECT username FROM users WHERE id = ${ownerId}),
+        (SELECT username FROM users WHERE id = ${session.id})
+      )
+    `;
 
-    return NextResponse.json({ ok: true });
-  } catch {
-    return NextResponse.json({ ok: false, error: 'server' }, { status: 500 });
+    return NextResponse.json({ ok: true, catch_id: catchId });
+  } catch (e) {
+    return NextResponse.json({ error: 'server' }, { status: 500 });
   }
 }
