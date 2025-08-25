@@ -7,18 +7,17 @@ export const revalidate = 0;
 
 /**
  * GET：列池塘里的鱼（稳定版）
- * - 仅过滤 in_pond=TRUE
- * - 聚合 reactions 当前快照（每个 user 对每条鱼一条记录），统计 value=1 / -1 数
- * - 不做“按天窗口”过滤，避免把返回吃空
- * - my_vote 可选：如需前端高亮，可读取当前用户对每条鱼的 value
+ * - 只看 in_pond = TRUE
+ * - 用两个 LEFT JOIN 子查询拿到 likes/dislikes 聚合 & 当前用户的 my_vote
+ *   -> 避免 ANY($array) / IN ($p1,$p2,...) 的数组参数问题
  */
 export async function GET() {
-  // 前端不一定需要 my_vote；如果取到了 session 就顺便带上
+  // 前端并不强制要 my_vote；如果有登录，顺便带上
   const session = await getSession().catch(() => null);
+  const uid = session?.id ?? null;
 
   try {
-    // 基础列表（池塘里的鱼）
-    const { rows: fish } = await sql/*sql*/`
+    const { rows } = await sql/*sql*/`
       SELECT
         f.id,
         f.name,
@@ -26,56 +25,45 @@ export async function GET() {
         f.w,
         f.h,
         f.created_at,
-        f.in_pond,
-        u.username AS owner_name
+        u.username AS owner_name,
+        COALESCE(rx.likes, 0)::int     AS likes,
+        COALESCE(rx.dislikes, 0)::int  AS dislikes,
+        ${uid ? sql/*sql*/`rme.value` : sql/*sql*/`NULL`} AS my_vote
       FROM fish f
       JOIN users u ON u.id = f.owner_id
-      WHERE f.in_pond IS TRUE
+      -- 聚合好的点赞/点踩
+      LEFT JOIN (
+        SELECT
+          r.fish_id,
+          SUM(CASE WHEN r.value = 1  THEN 1 ELSE 0 END)::int AS likes,
+          SUM(CASE WHEN r.value = -1 THEN 1 ELSE 0 END)::int AS dislikes
+        FROM reactions r
+        GROUP BY r.fish_id
+      ) rx ON rx.fish_id = f.id
+      -- 当前用户对每条鱼的投票（最多一条，主键 (fish_id, user_id)）
+      ${uid ? sql/*sql*/`
+        LEFT JOIN (
+          SELECT fish_id, value
+          FROM reactions
+          WHERE user_id = ${uid}
+        ) rme ON rme.fish_id = f.id
+      ` : sql/*sql*/``}
+      WHERE f.in_pond = TRUE
       ORDER BY f.created_at DESC
     `;
 
-    if (fish.length === 0) {
-      return NextResponse.json({ ok: true, fish: [] });
-    }
-
-    // 汇总点赞/点踩（基于 reactions 当前快照表：每个 user 对每条鱼一条，仅统计 value）
-    const { rows: agg } = await sql/*sql*/`
-      SELECT
-        r.fish_id,
-        COALESCE(SUM(CASE WHEN r.value = 1  THEN 1 ELSE 0 END), 0)::int AS likes,
-        COALESCE(SUM(CASE WHEN r.value = -1 THEN 1 ELSE 0 END), 0)::int AS dislikes
-      FROM reactions r
-      WHERE r.fish_id = ANY(${fish.map((f: any) => f.id)})
-      GROUP BY r.fish_id
-    `;
-    const aggMap = new Map<string, { likes: number; dislikes: number }>();
-    for (const a of agg as any[]) {
-      aggMap.set(a.fish_id, { likes: Number(a.likes) || 0, dislikes: Number(a.dislikes) || 0 });
-    }
-
-    // 如果拿到了 session，再取一下“我对这些鱼的投票”用于前端高亮（可选）
-    let myMap = new Map<string, 1 | -1 | null>();
-    if (session?.id) {
-      const { rows: mine } = await sql/*sql*/`
-        SELECT fish_id, value
-        FROM reactions
-        WHERE user_id = ${session.id}
-          AND fish_id = ANY(${fish.map((f: any) => f.id)})
-      `;
-      myMap = new Map(mine.map((r: any) => [r.fish_id as string, (r.value === 1 || r.value === -1) ? r.value : null]));
-    }
-
-    const list = (fish as any[]).map((f) => ({
-      id: f.id,
-      name: f.name,
-      data_url: f.data_url,
-      w: f.w,
-      h: f.h,
-      created_at: f.created_at,
-      owner_name: f.owner_name,
-      likes: aggMap.get(f.id)?.likes ?? 0,
-      dislikes: aggMap.get(f.id)?.dislikes ?? 0,
-      my_vote: myMap.get(f.id) ?? null,
+    // 统一把 my_vote 规范到 1 | -1 | null
+    const list = rows.map((r: any) => ({
+      id: r.id,
+      name: r.name,
+      data_url: r.data_url,
+      w: r.w,
+      h: r.h,
+      created_at: r.created_at,
+      owner_name: r.owner_name,
+      likes: Number(r.likes) || 0,
+      dislikes: Number(r.dislikes) || 0,
+      my_vote: r.my_vote === 1 || r.my_vote === -1 ? (r.my_vote as 1 | -1) : null,
     }));
 
     return NextResponse.json({ ok: true, fish: list });
@@ -85,9 +73,7 @@ export async function GET() {
 }
 
 /**
- * POST：保存新鱼
- * - 记得写 in_pond = TRUE，否则 GET 查不到
- * - 写一条 ADD 公告
+ * POST：保存新鱼（保持你之前的逻辑）
  */
 export async function POST(req: Request) {
   const session = await getSession();
