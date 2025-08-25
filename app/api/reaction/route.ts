@@ -1,4 +1,3 @@
-// /app/api/reaction/route.ts
 import { NextResponse } from 'next/server';
 import { getSession } from '../../../lib/auth';
 import { sql } from '../../../lib/db';
@@ -6,57 +5,76 @@ import { sql } from '../../../lib/db';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-/** 北京时间 4:00 为日界，返回今天 day_key（字符串） */
-function bj4DayKey(date = new Date()): string {
-  // 取北京本地时间（UTC+8），往回挪 4 小时，再取“本地日”
-  const utc = date.getTime();
-  // 把 UTC 转北京：+8h，然后再 -4h = +4h
-  const bjLike = new Date(utc + 4 * 3600_000);
-  const y = bjLike.getUTCFullYear();
-  const m = bjLike.getUTCMonth() + 1;
-  const d = bjLike.getUTCDate();
-  const pad = (n: number) => (n < 10 ? '0' + n : '' + n);
-  return `${y}${pad(m)}${pad(d)}`;
+// 北京时间 4 点为一天边界，生成 day_key（如 20250825）
+function bj4DayKey(): string {
+  const now = new Date();
+  // 北京 UTC+8
+  const bj = new Date(now.getTime() + 8 * 3600 * 1000);
+  // 当天 04:00
+  const dayStart = new Date(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate(), 4, 0, 0);
+  // 如果当前（北京时间）在 0:00-3:59 之间，属于“前一天”
+  if (bj.getUTCHours() < 4) {
+    dayStart.setDate(dayStart.getDate() - 1);
+  }
+  // 格式化 YYYYMMDD
+  const y = dayStart.getFullYear();
+  const m = String(dayStart.getMonth() + 1).padStart(2, '0');
+  const d = String(dayStart.getDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
 }
 
-/**
- * 点赞/点踩（当天唯一；可取消/改主意）
- * - value: 1 / -1 / 0（0=取消）
- * - reactions 主键/唯一：(fish_id, user_id, day_key)
- * - likes/dislikes = 全表聚合（历史累计）
- * - my_vote = 我今天的值
- */
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session) {
-    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
-  }
+  if (!session) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
 
   const body = await req.json().catch(() => ({}));
   const fishId = String(body.fishId || '');
-  const raw = Number(body.value);
-  // 允许 0 代表取消
-  const value = raw === 1 ? 1 : raw === -1 ? -1 : 0;
+  const incoming: 1 | -1 | 0 =
+    body.value === 1 ? 1 : body.value === -1 ? -1 : 0; // 我们允许 0（取消），但前端通常传 1/-1
 
-  if (!fishId || !Number.isFinite(value)) {
+  if (!fishId || (incoming !== 1 && incoming !== -1)) {
     return NextResponse.json({ ok: false, error: 'bad_request' }, { status: 400 });
   }
 
-  const dayKey = bj4DayKey();
-
   try {
-    // 当天 upsert：有则改 value / 没有则插入
-    await sql/*sql*/`
-      INSERT INTO reactions (fish_id, user_id, day_key, value, created_at)
-      VALUES (${fishId}, ${session.id}, ${dayKey}, ${value}, NOW())
-      ON CONFLICT (fish_id, user_id, day_key)
-      DO UPDATE SET
-        value = EXCLUDED.value,
-        created_at = NOW()
+    const dayKey = bj4DayKey();
+
+    // 查当前是否已有记录（注意：你的 reactions 主键是 (fish_id, user_id)）
+    const { rows: existRows } = await sql/*sql*/`
+      SELECT fish_id, user_id, value, day_key
+      FROM reactions
+      WHERE fish_id = ${fishId} AND user_id = ${session.id}
+      LIMIT 1
     `;
 
-    // 总计数（历史累计）
-    const agg = await sql/*sql*/`
+    if (existRows.length === 0) {
+      // 没有就插入（第一次对这条鱼投票）
+      await sql/*sql*/`
+        INSERT INTO reactions (fish_id, user_id, value, day_key, created_at)
+        VALUES (${fishId}, ${session.id}, ${incoming}, ${dayKey}, NOW())
+      `;
+    } else {
+      const cur = existRows[0] as { value: number | null; day_key: string | null };
+      const curValue = typeof cur.value === 'number' ? cur.value : 0;
+      const curDayKey = cur.day_key || '';
+
+      // 同一天：再次点相同按钮 = 取消（置 0），否则切换成新值
+      // 跨天：直接覆盖为新值，并把 day_key 写成今天
+      let nextValue = incoming as 0 | 1 | -1;
+      if (curDayKey === dayKey) {
+        if (curValue === incoming) {
+          nextValue = 0; // 取消
+        }
+      }
+      await sql/*sql*/`
+        UPDATE reactions
+        SET value = ${nextValue}, day_key = ${dayKey}, created_at = NOW()
+        WHERE fish_id = ${fishId} AND user_id = ${session.id}
+      `;
+    }
+
+    // 重新统计该鱼的 likes/dislikes（基于当前 reactions 快照）
+    const { rows: agg } = await sql/*sql*/`
       SELECT
         COALESCE(SUM(CASE WHEN value = 1  THEN 1 ELSE 0 END), 0)::int AS likes,
         COALESCE(SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END), 0)::int AS dislikes
@@ -64,23 +82,18 @@ export async function POST(req: Request) {
       WHERE fish_id = ${fishId}
     `;
 
-    // 我今天的状态
-    const mine = await sql/*sql*/`
-      SELECT value
-      FROM reactions
-      WHERE fish_id = ${fishId} AND user_id = ${session.id} AND day_key = ${dayKey}
-      LIMIT 1
-    `;
+    const likes = Number(agg?.[0]?.likes ?? 0);
+    const dislikes = Number(agg?.[0]?.dislikes ?? 0);
 
-    const likes = Number(agg.rows?.[0]?.likes ?? 0);
-    const dislikes = Number(agg.rows?.[0]?.dislikes ?? 0);
-    const my_vote_raw = Number(mine.rows?.[0]?.value ?? 0);
-    const my_vote: 1 | -1 | null =
-      my_vote_raw === 1 ? 1 : my_vote_raw === -1 ? -1 : null;
+    // 返回我当前这次操作后的 my_vote
+    const { rows: mine } = await sql/*sql*/`
+      SELECT value FROM reactions WHERE fish_id = ${fishId} AND user_id = ${session.id} LIMIT 1
+    `;
+    const v = mine?.[0]?.value;
+    const my_vote: 1 | -1 | null = v === 1 || v === -1 ? v : null;
 
     return NextResponse.json({ ok: true, likes, dislikes, my_vote });
   } catch (e) {
-    console.error('POST /api/reaction failed', e);
     return NextResponse.json({ ok: false, error: 'server' }, { status: 500 });
   }
 }
