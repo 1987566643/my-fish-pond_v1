@@ -64,43 +64,6 @@ export async function GET() {
   }
 }
 
-/** POST：保持你现有版本；如下只是占位，和你之前一致 */
-export async function POST(req: Request) {
-  const session = await getSession();
-  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-
-  const { name, data_url, w, h } = await req.json();
-
-  try {
-    const { rows } = await sql/*sql*/`
-      INSERT INTO fish (owner_id, name, data_url, w, h, in_pond)
-      VALUES (${session.id}, ${name}, ${data_url}, ${w}, ${h}, TRUE)
-      RETURNING id
-    `;
-    const fishId = rows[0].id as string;
-
-    await sql/*sql*/`
-      INSERT INTO pond_events (
-        type, actor_id, target_fish_id, target_owner_id,
-        fish_name, actor_username, owner_username
-      )
-      VALUES (
-        'ADD',
-        ${session.id},
-        ${fishId},
-        ${session.id},
-        ${name},
-        (SELECT username FROM users WHERE id = ${session.id}),
-        (SELECT username FROM users WHERE id = ${session.id})
-      )
-    `;
-
-    return NextResponse.json({ ok: true, id: fishId });
-  } catch {
-    return NextResponse.json({ error: 'server' }, { status: 500 });
-  }
-}
-
 /**
  * POST：保存新鱼（保持你之前的逻辑）
  */
