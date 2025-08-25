@@ -6,71 +6,42 @@ import { sql } from '../../../lib/db';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-/** 生成北京时间 4:00~次日 4:00 的 ISO 窗口，用字符串避免把 Date 直接传 SQL */
-function bj4WindowISO() {
-  const now = new Date();
-  const bjNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
-  const start = new Date(bjNow);
-  start.setHours(4, 0, 0, 0);
-  if (bjNow.getTime() < start.getTime()) start.setDate(start.getDate() - 1);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return { startISO: start.toISOString(), endISO: end.toISOString() };
-}
-
+/**
+ * 点赞/点踩（再次点击同一按钮就是取消，value 可以为 1 / -1 / 0）
+ * 规则：
+ * - reactions 以 (fish_id, user_id) 唯一；总是 UPSERT 覆盖 value
+ * - 计数使用聚合：SUM(value=1)、SUM(value=-1)，不会重复累计
+ * - 返回 { ok, likes, dislikes, my_vote }
+ */
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  if (!session) {
+    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  }
 
-  const body = await req.json().catch(() => ({} as any));
+  const body = await req.json().catch(() => ({}));
   const fishId = String(body.fishId || '');
-  const rawVal = Number(body.value);
-  if (!fishId || (rawVal !== 1 && rawVal !== -1)) {
+  // 允许 1 / -1 / 0（0 代表取消）
+  const raw = Number(body.value);
+  const value = raw === 1 ? 1 : raw === -1 ? -1 : 0;
+
+  if (!fishId || !Number.isFinite(value)) {
     return NextResponse.json({ ok: false, error: 'bad_request' }, { status: 400 });
   }
-  const value = rawVal as 1 | -1;
-
-  const { startISO, endISO } = bj4WindowISO();
 
   try {
-    // 防呆：鱼存在
-    const chk = await sql/*sql*/`SELECT 1 FROM fish WHERE id = ${fishId} LIMIT 1`;
-    if (chk.rowCount === 0) return NextResponse.json({ ok: false, error: 'not_found' }, { status: 404 });
-
-    // 查今天我对这条鱼的最新一条
-    const prev = await sql/*sql*/`
-      SELECT value
-      FROM reactions
-      WHERE user_id = ${session.id}
-        AND fish_id = ${fishId}
-        AND created_at >= ${startISO}
-        AND created_at <  ${endISO}
-      ORDER BY created_at DESC
-      LIMIT 1
-    `;
-    const prevValue: 1 | -1 | undefined = prev.rows[0]?.value;
-
-    // 幂等：先删掉今天的，再决定是否插入
+    // 1) UPSERT：覆盖本用户对该鱼的投票
+    // 如果表里有 updated_at 列，更推荐更新 updated_at；没有就更新 created_at 也行。
     await sql/*sql*/`
-      DELETE FROM reactions
-      WHERE user_id = ${session.id}
-        AND fish_id = ${fishId}
-        AND created_at >= ${startISO}
-        AND created_at <  ${endISO}
+      INSERT INTO reactions (fish_id, user_id, value, created_at)
+      VALUES (${fishId}, ${session.id}, ${value}, NOW())
+      ON CONFLICT (fish_id, user_id)
+      DO UPDATE SET
+        value = EXCLUDED.value,
+        created_at = NOW()
     `;
 
-    let my_vote: 1 | -1 | null = null;
-    if (prevValue !== value) {
-      await sql/*sql*/`
-        INSERT INTO reactions (user_id, fish_id, value)
-        VALUES (${session.id}, ${fishId}, ${value})
-      `;
-      my_vote = value;
-    } else {
-      my_vote = null; // 取消
-    }
-
-    // 全历史聚合（排行榜/总数用）
+    // 2) 聚合最新计数
     const agg = await sql/*sql*/`
       SELECT
         COALESCE(SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END), 0)::int AS likes,
@@ -78,12 +49,25 @@ export async function POST(req: Request) {
       FROM reactions
       WHERE fish_id = ${fishId}
     `;
-    const likes = Number(agg.rows[0]?.likes ?? 0);
-    const dislikes = Number(agg.rows[0]?.dislikes ?? 0);
+
+    // 3) 当前用户的最新状态
+    const mine = await sql/*sql*/`
+      SELECT value
+      FROM reactions
+      WHERE fish_id = ${fishId} AND user_id = ${session.id}
+      LIMIT 1
+    `;
+
+    const likes = Number(agg.rows?.[0]?.likes ?? 0);
+    const dislikes = Number(agg.rows?.[0]?.dislikes ?? 0);
+    const my_vote_raw = Number(mine.rows?.[0]?.value ?? 0);
+    const my_vote: 1 | -1 | null =
+      my_vote_raw === 1 ? 1 : my_vote_raw === -1 ? -1 : null;
 
     return NextResponse.json({ ok: true, likes, dislikes, my_vote });
   } catch (e) {
+    // 兜底日志，便于快速定位
     console.error('POST /api/reaction failed', e);
-    return NextResponse.json({ ok: false, error: 'server_error' }, { status: 500 });
+    return NextResponse.json({ ok: false, error: 'server' }, { status: 500 });
   }
 }
