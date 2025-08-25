@@ -32,15 +32,15 @@ export async function POST(req: Request) {
   if (!fishId) return NextResponse.json({ ok: false, error: 'bad_request' }, { status: 400 });
 
   try {
-    // 1) 尝试从池塘里“拿走”这条鱼（原子）
+    // 1) 原子“拿鱼”：只在 in_pond=TRUE 时更新为 FALSE
     const upd = await sql/*sql*/`
       UPDATE fish SET in_pond = FALSE
       WHERE id = ${fishId} AND in_pond = TRUE
       RETURNING id, owner_id, name
     `;
 
-    if (upd.rowCount === 0) {
-      // 可能是重复点/并发；幂等兜底：最近 3 秒内是否就是我钓到过？
+    if ((upd.rows?.length ?? 0) === 0) {
+      // 可能重复点击/并发竞争；幂等兜底：最近 3 秒内是否由当前用户钓到过？
       const sinceISO = new Date(Date.now() - 3000).toISOString();
       const chk = await sql/*sql*/`
         SELECT 1
@@ -50,8 +50,9 @@ export async function POST(req: Request) {
           AND created_at >= ${sinceISO}
         LIMIT 1
       `;
-      if (chk.rowCount > 0) {
-        return NextResponse.json({ ok: true }); // 幂等：认作成功
+      if ((chk.rows?.length ?? 0) > 0) {
+        // 幂等：视为成功
+        return NextResponse.json({ ok: true });
       }
       return NextResponse.json({ ok: false, reason: 'already_caught' }, { status: 409 });
     }
@@ -65,7 +66,7 @@ export async function POST(req: Request) {
       VALUES (${fishId}, ${session.id}, FALSE)
     `;
 
-    // 3) 计数 +1
+    // 3) 用户计数 +1
     await sql/*sql*/`
       UPDATE users
       SET today_catch = today_catch + 1,
